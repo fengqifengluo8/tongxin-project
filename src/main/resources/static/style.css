@@ -1429,6 +1429,16 @@ code {
   height: 360px;
 }
 
+/* 全屏模式下的地图 */
+.map-root-el:fullscreen,
+.map-root-el:-webkit-full-screen,
+.map-root-el:-ms-fullscreen {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 100vh !important;
+  z-index: 9999;
+}
+
 .map-shell--tall .map-root-el {
   height: min(420px, 55vh);
   min-height: 280px;

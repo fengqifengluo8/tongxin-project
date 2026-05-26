@@ -2837,6 +2837,7 @@
               zoom: role === "commander" ? 13 : 14,
               center,
               viewMode: "3D",
+              resizeEnable: true,
               scrollWheel: true,
               doubleClickZoom: true,
               dragEnable: true,
@@ -2851,6 +2852,18 @@
               }
             } catch (e) {
               // 工具栏加载失败不影响主功能
+            }
+            // 添加全屏/旋转/倾斜控件
+            try {
+              if (AMap.ControlBar) {
+                this.mapInstance.addControl(new AMap.ControlBar({
+                  position: { top: "10px", right: "10px" },
+                  showControlButton: true,
+                  showZoomBar: false,
+                }));
+              }
+            } catch (e) {
+              // 控件加载失败不影响主功能
             }
 
             // 添加地图点击事件，点击地图时自动填充事发点坐标
