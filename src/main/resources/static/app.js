@@ -2208,7 +2208,11 @@
           const map = new AMap.Map(`route-map-${uid}`, {
             center: [(myLng + taskLng) / 2, (myLat + taskLat) / 2],
             zoom: 13,
-            resizeEnable: true
+            resizeEnable: true,
+            scrollWheel: true,
+            doubleClickZoom: true,
+            dragEnable: true,
+            zoomEnable: true,
           });
           
           // 添加起点和终点标记
@@ -2833,8 +2837,22 @@
               zoom: role === "commander" ? 13 : 14,
               center,
               viewMode: "3D",
+              scrollWheel: true,
+              doubleClickZoom: true,
+              dragEnable: true,
+              zoomEnable: true,
+              touchZoom: true,
             });
             
+            // 添加缩放工具栏（+/- 按钮）
+            try {
+              if (AMap.ToolBar) {
+                this.mapInstance.addControl(new AMap.ToolBar({ position: "RT" }));
+              }
+            } catch (e) {
+              // 工具栏加载失败不影响主功能
+            }
+
             // 添加地图点击事件，点击地图时自动填充事发点坐标
             if (role === "commander") {
               this.mapInstance.on('click', (e) => {
