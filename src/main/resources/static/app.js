@@ -2845,8 +2845,12 @@
               touchZoom: true,
             });
             
-            // 注入自定义缩放和全屏按钮（不依赖高德插件，使用原生API）
-            this.injectMapControls(elId);
+            // 注入自定义缩放和全屏按钮（延迟执行，等AMap DOM完全就绪）
+            const gen = this.mapGeneration;
+            setTimeout(() => {
+              if (this.mapGeneration !== gen) return; // 地图已被重建，放弃
+              this.injectMapControls(elId);
+            }, 200);
 
             // 添加地图点击事件，点击地图时自动填充事发点坐标
             if (role === "commander") {
@@ -3016,16 +3020,15 @@
 
       // 在地图容器上注入自定义缩放和全屏按钮
       injectMapControls(elId) {
-        const el = document.getElementById(elId);
-        if (!el || !this.mapInstance) return;
+        const mapEl = document.getElementById(elId);
+        if (!mapEl || !this.mapInstance) return;
 
-        // 确保容器可以定位
-        if (!el.style.position || el.style.position === "static") {
-          el.style.position = "relative";
-        }
+        // 注入到 .map-shell 父容器上（不在 .map-root-el 里，避免被高德 canvas 遮挡）
+        const shell = mapEl.closest(".map-shell");
+        if (!shell) return;
 
         // 移除旧控件（避免重复注入）
-        const old = el.querySelector(".map-custom-controls");
+        const old = shell.querySelector(".map-custom-controls");
         if (old) old.remove();
 
         // 创建控件容器
@@ -3036,7 +3039,7 @@
           <button class="mc-btn" title="缩小" data-action="zoomout">−</button>
           <button class="mc-btn mc-btn--full" title="全屏" data-action="fullscreen">⛶</button>
         `;
-        el.appendChild(ctrl);
+        shell.appendChild(ctrl);
 
         // 事件委托
         ctrl.addEventListener("click", (e) => {
@@ -3062,12 +3065,12 @@
             btn.title = document.fullscreenElement ? "退出全屏" : "全屏";
           }
         };
-        el.addEventListener("fullscreenchange", onFsChange);
-        el.addEventListener("webkitfullscreenchange", onFsChange);
+        shell.addEventListener("fullscreenchange", onFsChange);
+        shell.addEventListener("webkitfullscreenchange", onFsChange);
       },
 
       toggleMapFullscreen(elId) {
-        const el = document.getElementById(elId);
+        const el = document.getElementById(elId).closest(".map-shell") || document.getElementById(elId);
         if (!el) return;
         if (!document.fullscreenElement) {
           if (el.requestFullscreen) {

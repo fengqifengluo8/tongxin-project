@@ -593,7 +593,6 @@ textarea:focus {
 .map-shell {
   margin-top: 0.65rem;
   border-radius: 10px;
-  overflow: hidden;
   border: 1px solid var(--border);
   min-height: 280px;
   background: rgba(0, 0, 0, 0.35);
@@ -1432,11 +1431,22 @@ code {
 /* 全屏模式下的地图 */
 .map-root-el:fullscreen,
 .map-root-el:-webkit-full-screen,
-.map-root-el:-ms-fullscreen {
+.map-root-el:-ms-fullscreen,
+.map-shell:fullscreen,
+.map-shell:-webkit-full-screen,
+.map-shell:-ms-fullscreen {
   width: 100vw !important;
   height: 100vh !important;
   min-height: 100vh !important;
   z-index: 9999;
+}
+
+/* 全屏时 .map-shell 内的地图占满 */
+.map-shell:fullscreen .map-root-el,
+.map-shell:-webkit-full-screen .map-root-el,
+.map-shell:-ms-fullscreen .map-root-el {
+  height: 100% !important;
+  min-height: 100% !important;
 }
 
 /* 自定义地图控件按钮 */
@@ -1444,7 +1454,7 @@ code {
   position: absolute;
   top: 8px;
   right: 8px;
-  z-index: 100;
+  z-index: 1000;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1455,7 +1465,7 @@ code {
   height: 30px;
   border: none;
   border-radius: 4px;
-  background: rgba(15, 23, 42, 0.85);
+  background: rgba(15, 23, 42, 0.9);
   color: #e2e8f0;
   font-size: 1rem;
   font-weight: 700;
@@ -1464,9 +1474,10 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
   transition: background 0.15s, color 0.15s;
   user-select: none;
+  pointer-events: auto;
 }
 
 .mc-btn:hover {
