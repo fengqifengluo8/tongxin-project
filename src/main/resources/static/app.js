@@ -2845,21 +2845,8 @@
               touchZoom: true,
             });
             
-            // 加载缩放工具条和全屏控件（需通过 AMap.plugin 异步加载）
-            AMap.plugin(["AMap.ToolBar", "AMap.ControlBar"], () => {
-              try {
-                this.mapInstance.addControl(new AMap.ToolBar({
-                  position: { top: "10px", right: "10px" },
-                }));
-              } catch (e) { /* ignore */ }
-              try {
-                this.mapInstance.addControl(new AMap.ControlBar({
-                  position: { top: "50px", right: "10px" },
-                  showControlButton: true,
-                  showZoomBar: false,
-                }));
-              } catch (e) { /* ignore */ }
-            });
+            // 注入自定义缩放和全屏按钮（不依赖高德插件，使用原生API）
+            this.injectMapControls(elId);
 
             // 添加地图点击事件，点击地图时自动填充事发点坐标
             if (role === "commander") {
@@ -3025,6 +3012,76 @@
         }
         this.mapLoaded = false;
         this.mapContext = "";
+      },
+
+      // 在地图容器上注入自定义缩放和全屏按钮
+      injectMapControls(elId) {
+        const el = document.getElementById(elId);
+        if (!el || !this.mapInstance) return;
+
+        // 确保容器可以定位
+        if (!el.style.position || el.style.position === "static") {
+          el.style.position = "relative";
+        }
+
+        // 移除旧控件（避免重复注入）
+        const old = el.querySelector(".map-custom-controls");
+        if (old) old.remove();
+
+        // 创建控件容器
+        const ctrl = document.createElement("div");
+        ctrl.className = "map-custom-controls";
+        ctrl.innerHTML = `
+          <button class="mc-btn" title="放大" data-action="zoomin">+</button>
+          <button class="mc-btn" title="缩小" data-action="zoomout">−</button>
+          <button class="mc-btn mc-btn--full" title="全屏" data-action="fullscreen">⛶</button>
+        `;
+        el.appendChild(ctrl);
+
+        // 事件委托
+        ctrl.addEventListener("click", (e) => {
+          const btn = e.target.closest("[data-action]");
+          if (!btn) return;
+          const action = btn.getAttribute("data-action");
+          if (action === "zoomin") {
+            const z = this.mapInstance.getZoom();
+            this.mapInstance.setZoom(Math.min(z + 1, 19));
+          } else if (action === "zoomout") {
+            const z = this.mapInstance.getZoom();
+            this.mapInstance.setZoom(Math.max(z - 1, 3));
+          } else if (action === "fullscreen") {
+            this.toggleMapFullscreen(elId);
+          }
+        });
+
+        // 监听全屏变化来更新按钮图标
+        const onFsChange = () => {
+          const btn = ctrl.querySelector("[data-action='fullscreen']");
+          if (btn) {
+            btn.textContent = document.fullscreenElement ? "✕" : "⛶";
+            btn.title = document.fullscreenElement ? "退出全屏" : "全屏";
+          }
+        };
+        el.addEventListener("fullscreenchange", onFsChange);
+        el.addEventListener("webkitfullscreenchange", onFsChange);
+      },
+
+      toggleMapFullscreen(elId) {
+        const el = document.getElementById(elId);
+        if (!el) return;
+        if (!document.fullscreenElement) {
+          if (el.requestFullscreen) {
+            el.requestFullscreen();
+          } else if (el.webkitRequestFullscreen) {
+            el.webkitRequestFullscreen();
+          }
+        } else {
+          if (document.exitFullscreen) {
+            document.exitFullscreen();
+          } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+          }
+        }
       },
       
       // 处理位置更新消息

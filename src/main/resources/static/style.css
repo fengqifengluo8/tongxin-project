@@ -1439,6 +1439,49 @@ code {
   z-index: 9999;
 }
 
+/* 自定义地图控件按钮 */
+.map-custom-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mc-btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.85);
+  color: #e2e8f0;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.mc-btn:hover {
+  background: rgba(59, 130, 246, 0.85);
+  color: #fff;
+}
+
+.mc-btn:active {
+  transform: scale(0.95);
+}
+
+.mc-btn--full {
+  font-size: 0.9rem;
+}
+
 .map-shell--tall .map-root-el {
   height: min(420px, 55vh);
   min-height: 280px;
