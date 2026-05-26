@@ -2845,26 +2845,21 @@
               touchZoom: true,
             });
             
-            // 添加缩放工具栏（+/- 按钮）
-            try {
-              if (AMap.ToolBar) {
-                this.mapInstance.addControl(new AMap.ToolBar({ position: "RT" }));
-              }
-            } catch (e) {
-              // 工具栏加载失败不影响主功能
-            }
-            // 添加全屏/旋转/倾斜控件
-            try {
-              if (AMap.ControlBar) {
-                this.mapInstance.addControl(new AMap.ControlBar({
+            // 加载缩放工具条和全屏控件（需通过 AMap.plugin 异步加载）
+            AMap.plugin(["AMap.ToolBar", "AMap.ControlBar"], () => {
+              try {
+                this.mapInstance.addControl(new AMap.ToolBar({
                   position: { top: "10px", right: "10px" },
+                }));
+              } catch (e) { /* ignore */ }
+              try {
+                this.mapInstance.addControl(new AMap.ControlBar({
+                  position: { top: "50px", right: "10px" },
                   showControlButton: true,
                   showZoomBar: false,
                 }));
-              }
-            } catch (e) {
-              // 控件加载失败不影响主功能
-            }
+              } catch (e) { /* ignore */ }
+            });
 
             // 添加地图点击事件，点击地图时自动填充事发点坐标
             if (role === "commander") {
