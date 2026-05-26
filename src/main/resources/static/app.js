@@ -2369,14 +2369,15 @@
       sendConnectionRequest() {
         if (!this.canSendWs) return;
         const session = localStorage.getItem(LS_SESSION);
-        let unitId = "U-001";
-        let name = "巡逻组";
+        // 优先使用已登录警员的用户名和编号，不再统一叫"巡逻组"
+        let unitId = this.officerId || "U-001";
+        let name = this.officerName || "警员";
         if (session) {
           try {
             const o = JSON.parse(session);
             if (o && o.username) {
               name = o.username;
-              unitId = "U-" + o.username.toUpperCase().substring(0, 3);
+              unitId = this.officerId || ("U-" + o.username.toUpperCase().substring(0, 3));
             }
           } catch {
             /* ignore */

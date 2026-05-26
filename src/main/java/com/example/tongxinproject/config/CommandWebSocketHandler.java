@@ -49,7 +49,13 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
                 if ("commander".equals(role)) {
                     roleName = "指挥中心";
                 } else if ("officer".equals(role)) {
-                    roleName = "巡逻组";
+                    // 从已连接警员列表中获取真实姓名，不再统一叫"巡逻组"
+                    Map<String, Object> officer = connectedOfficers.get(session.getId());
+                    if (officer != null && officer.get("name") != null) {
+                        roleName = (String) officer.get("name");
+                    } else {
+                        roleName = "警员";
+                    }
                 }
                 broadcastMessage(JSON.toJSONString(Map.of(
                         "type", "BROADCAST",
