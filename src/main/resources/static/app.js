@@ -3057,13 +3057,19 @@
           }
         });
 
-        // 监听全屏变化来更新按钮图标
+        // 监听全屏变化来更新按钮图标 + 重绘地图
         const onFsChange = () => {
           const btn = ctrl.querySelector("[data-action='fullscreen']");
           if (btn) {
             btn.textContent = document.fullscreenElement ? "✕" : "⛶";
             btn.title = document.fullscreenElement ? "退出全屏" : "全屏";
           }
+          // 延迟调 resize，等 CSS 过渡/DOM 更新完成
+          setTimeout(() => {
+            if (this.mapInstance) {
+              this.mapInstance.resize();
+            }
+          }, 200);
         };
         shell.addEventListener("fullscreenchange", onFsChange);
         shell.addEventListener("webkitfullscreenchange", onFsChange);

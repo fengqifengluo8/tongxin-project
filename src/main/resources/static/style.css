@@ -1438,6 +1438,10 @@ code {
   width: 100vw !important;
   height: 100vh !important;
   min-height: 100vh !important;
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: #000 !important;
   z-index: 9999;
 }
 
