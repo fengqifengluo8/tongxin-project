@@ -1,0 +1,1518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>三维态势指挥中心</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Orbitron:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+  <style>
+    :root {
+      --bg-deep: #050a14;
+      --bg-panel: rgba(8, 16, 35, 0.85);
+      --border-glow: rgba(0, 180, 255, 0.35);
+      --accent-cyan: #00d4ff;
+      --accent-blue: #1e90ff;
+      --accent-red: #ff3b3b;
+      --accent-green: #00e676;
+      --text-primary: #e0eeff;
+      --text-secondary: #8faec9;
+      --text-dim: #5a7a9a;
+      --glow-cyan: 0 0 15px rgba(0, 212, 255, 0.5);
+      --glow-red: 0 0 15px rgba(255, 59, 59, 0.5);
+      --glow-green: 0 0 15px rgba(0, 230, 118, 0.5);
+      --panel-border: 1px solid rgba(0, 180, 255, 0.25);
+      --font-tech: 'Orbitron', 'JetBrains Mono', monospace;
+      --font-ui: 'Noto Sans SC', system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-ui);
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+      user-select: none;
+    }
+
+    #three-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .overlay > * {
+      pointer-events: auto;
+    }
+
+    .top-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 54px;
+      background: linear-gradient(180deg, rgba(8, 16, 35, 0.95) 0%, rgba(8, 16, 35, 0.7) 80%, transparent 100%);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 10;
+    }
+
+    .top-bar .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .top-bar .brand .logo-icon {
+      width: 36px;
+      height: 36px;
+      border: 2px solid var(--accent-cyan);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 212, 255, 0.08);
+      box-shadow: var(--glow-cyan);
+    }
+
+    .top-bar .brand .logo-icon svg {
+      width: 22px;
+      height: 22px;
+      fill: var(--accent-cyan);
+    }
+
+    .top-bar .brand h1 {
+      font-family: var(--font-tech);
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: var(--accent-cyan);
+      text-shadow: 0 0 10px rgba(0, 212, 255, 0.6);
+    }
+
+    .top-bar .status-group {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+
+    .top-bar .status-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-tech);
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.04em;
+    }
+
+    .top-bar .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      animation: pulse-dot 1.5s ease-in-out infinite;
+    }
+
+    .status-dot.online { background: #00e676; box-shadow: 0 0 8px #00e676; }
+    .status-dot.warning { background: #ffb300; box-shadow: 0 0 8px #ffb300; }
+    .status-dot.active { background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; animation-duration: 0.8s; }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .top-bar .sys-time {
+      font-family: var(--font-tech);
+      font-size: 0.8rem;
+      color: var(--accent-cyan);
+      letter-spacing: 0.06em;
+    }
+
+    /* 左侧面板 */
+    .left-panel {
+      position: absolute;
+      top: 70px;
+      left: 16px;
+      width: 300px;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* 右侧面板 */
+    .right-panel {
+      position: absolute;
+      top: 70px;
+      right: 16px;
+      width: 300px;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .panel {
+      background: var(--bg-panel);
+      border: var(--panel-border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      backdrop-filter: blur(12px);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .panel::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--accent-cyan), transparent);
+      opacity: 0.6;
+    }
+
+    .panel .panel-title {
+      font-family: var(--font-tech);
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      color: var(--accent-cyan);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel .panel-title .icon-bracket {
+      color: var(--text-dim);
+      font-weight: 400;
+    }
+
+    .panel .panel-title .divider {
+      flex: 1;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(0, 180, 255, 0.4), transparent);
+    }
+
+    /* 嫌疑人画像 */
+    .suspect-card {
+      background: rgba(255, 59, 59, 0.06);
+      border: 1px solid rgba(255, 59, 59, 0.25);
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+
+    .suspect-card .suspect-id {
+      font-family: var(--font-tech);
+      font-size: 0.85rem;
+      color: var(--accent-red);
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+
+    .suspect-card .danger-level {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 3px;
+      font-family: var(--font-tech);
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      margin-top: 4px;
+      margin-left: 4px;
+    }
+
+    .danger-high {
+      background: rgba(255, 59, 59, 0.3);
+      color: #ff6b6b;
+      border: 1px solid rgba(255, 59, 59, 0.5);
+    }
+
+    /* 数据行 */
+    .data-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .data-row .data-label {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    .data-row .data-value {
+      font-family: var(--font-tech);
+      font-size: 0.78rem;
+      color: var(--text-primary);
+      letter-spacing: 0.03em;
+    }
+
+    .data-value.highlight {
+      color: var(--accent-cyan);
+      text-shadow: 0 0 6px rgba(0, 212, 255, 0.5);
+    }
+
+    .data-value.danger {
+      color: var(--accent-red);
+      text-shadow: 0 0 6px rgba(255, 59, 59, 0.5);
+    }
+
+    .data-value.speed {
+      color: #ffb300;
+    }
+
+    /* 热力图迷你 */
+    .heatmap-mini {
+      height: 60px;
+      border-radius: 4px;
+      margin-top: 6px;
+      background: rgba(0, 0, 0, 0.3);
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .heatmap-mini canvas {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* 建议提示 */
+    .suggestion-card {
+      background: rgba(0, 212, 255, 0.05);
+      border: 1px solid rgba(0, 212, 255, 0.3);
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 8px;
+      animation: suggestion-glow 2s ease-in-out infinite;
+    }
+
+    @keyframes suggestion-glow {
+      0%, 100% { border-color: rgba(0, 212, 255, 0.3); }
+      50% { border-color: rgba(0, 212, 255, 0.7); box-shadow: 0 0 15px rgba(0, 212, 255, 0.15); }
+    }
+
+    .suggestion-card .sug-header {
+      font-family: var(--font-tech);
+      font-size: 0.7rem;
+      color: var(--accent-cyan);
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+
+    .suggestion-card .sug-content {
+      font-size: 0.8rem;
+      color: var(--text-primary);
+      line-height: 1.5;
+    }
+
+    .suggestion-card .sug-coord {
+      font-family: var(--font-tech);
+      font-size: 0.72rem;
+      color: #ffb300;
+      margin-top: 4px;
+    }
+
+    .btn-execute {
+      display: block;
+      width: 100%;
+      margin-top: 8px;
+      padding: 8px;
+      border: 1px solid var(--accent-cyan);
+      border-radius: 4px;
+      background: rgba(0, 212, 255, 0.12);
+      color: var(--accent-cyan);
+      font-family: var(--font-tech);
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn-execute:hover {
+      background: rgba(0, 212, 255, 0.25);
+      box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
+      transform: translateY(-1px);
+    }
+
+    .btn-execute.confirmed {
+      background: rgba(0, 230, 118, 0.2);
+      border-color: var(--accent-green);
+      color: var(--accent-green);
+      box-shadow: 0 0 20px rgba(0, 230, 118, 0.3);
+    }
+
+    /* 底部状态栏 */
+    .bottom-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 32px;
+      background: linear-gradient(0deg, rgba(8, 16, 35, 0.95) 0%, rgba(8, 16, 35, 0.7) 80%, transparent 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 30px;
+      font-family: var(--font-tech);
+      font-size: 0.62rem;
+      color: var(--text-dim);
+      letter-spacing: 0.06em;
+      z-index: 10;
+    }
+
+    .bottom-bar span {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .bottom-bar .blink {
+      animation: blink 1s steps(2) infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* 图例 */
+    .legend {
+      position: absolute;
+      bottom: 50px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-panel);
+      border: var(--panel-border);
+      border-radius: 6px;
+      padding: 8px 16px;
+      display: flex;
+      gap: 18px;
+      font-size: 0.7rem;
+      font-family: var(--font-tech);
+      color: var(--text-secondary);
+      letter-spacing: 0.04em;
+      z-index: 5;
+    }
+
+    .legend .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .legend-dot.red { background: #ff3b3b; box-shadow: 0 0 8px #ff3b3b; }
+    .legend-dot.blue { background: #1e90ff; box-shadow: 0 0 8px #1e90ff; }
+    .legend-dot.green { background: #00e676; box-shadow: 0 0 8px #00e676; }
+
+    /* 命令反馈弹窗 */
+    .cmd-toast {
+      position: fixed;
+      top: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 230, 118, 0.15);
+      border: 1px solid rgba(0, 230, 118, 0.5);
+      border-radius: 6px;
+      padding: 10px 24px;
+      font-family: var(--font-tech);
+      font-size: 0.75rem;
+      color: var(--accent-green);
+      letter-spacing: 0.04em;
+      z-index: 100;
+      animation: toast-in-out 2.5s ease forwards;
+      pointer-events: none;
+    }
+
+    @keyframes toast-in-out {
+      0% { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+      15% { opacity: 1; transform: translateX(-50%) translateY(0); }
+      80% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    /* 响应式 */
+    @media (max-width: 900px) {
+      .left-panel, .right-panel { width: 260px; }
+      .left-panel { left: 6px; }
+      .right-panel { right: 6px; }
+      .top-bar h1 { font-size: 0.85rem; }
+    }
+
+    @media (max-width: 640px) {
+      .left-panel, .right-panel { width: calc(50vw - 12px); }
+      .panel { padding: 8px 10px; }
+      .legend { gap: 10px; font-size: 0.62rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Three.js Canvas -->
+  <canvas id="three-canvas"></canvas>
+
+  <!-- UI Overlay -->
+  <div class="overlay">
+
+    <!-- 顶部状态栏 -->
+    <div class="top-bar">
+      <div class="brand">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24"><path d="M12 2L4 6v8c0 6.4 3.2 11.2 8 12 4.8-.8 8-5.6 8-12V6L12 2z"/></svg>
+        </div>
+        <h1>三维态势指挥中心</h1>
+      </div>
+      <div class="status-group">
+        <div class="status-item">
+          <span class="status-dot online"></span> 系统正常
+        </div>
+        <div class="status-item">
+          <span class="status-dot active"></span> 跟踪中
+        </div>
+        <div class="status-item">
+          <span class="status-dot warning"></span> 待命警力 8
+        </div>
+        <div class="sys-time" id="sys-time">--</div>
+      </div>
+    </div>
+
+    <!-- 左侧面板：态势情报 -->
+    <div class="left-panel">
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon-bracket">[</span> 嫌疑人画像 <span class="divider"></span>
+        </div>
+        <div class="suspect-card">
+          <span class="suspect-id">SUSPECT-8842</span>
+          <span class="danger-level danger-high">高危</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">模拟ID</span>
+          <span class="data-value danger">S-8842</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">危险等级</span>
+          <span class="data-value danger">一级（红色）</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">威胁类型</span>
+          <span class="data-value">持械危险</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon-bracket">[</span> 实时坐标与速度 <span class="divider"></span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">经度 (LNG)</span>
+          <span class="data-value highlight" id="coord-lng">116.404</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">纬度 (LAT)</span>
+          <span class="data-value highlight" id="coord-lat">39.915</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">移动速度</span>
+          <span class="data-value speed" id="coord-speed">12.5 km/h</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">方向</span>
+          <span class="data-value" id="coord-dir">东北</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">更新时间</span>
+          <span class="data-value" id="coord-time">--</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon-bracket">[</span> 历史轨迹热力图 <span class="divider"></span>
+        </div>
+        <div class="heatmap-mini" id="heatmap-container">
+          <canvas id="heatmap-canvas"></canvas>
+        </div>
+        <div class="data-row" style="margin-top: 6px;">
+          <span class="data-label">轨迹点数</span>
+          <span class="data-value" id="trail-count">0</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧面板：决策辅助 -->
+    <div class="right-panel">
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon-bracket">[</span> 智能决策建议 <span class="divider"></span>
+        </div>
+        <div class="suggestion-card" id="suggestion-card">
+          <div class="sug-header">※ 行动建议</div>
+          <div class="sug-content">建议无人车前往坐标 <strong id="sug-coord-text">(116.408, 39.918)</strong> 进行封堵拦截。</div>
+          <div class="sug-coord">预计拦截时间：<span id="sug-eta">3.2 min</span></div>
+          <button class="btn-execute" id="btn-confirm" onclick="executeCommand()">
+            ▸ 一键下达确认
+          </button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon-bracket">[</span> 警力状态 <span class="divider"></span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">🔴 嫌疑目标</span>
+          <span class="data-value danger">移动中</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">🔵 无人车 Unit-01</span>
+          <span class="data-value highlight">前往拦截</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">🟢 警员 Unit-03</span>
+          <span class="data-value highlight">就位待命</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">🟢 警员 Unit-07</span>
+          <span class="data-value">巡逻中</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon-bracket">[</span> 动态围栏状态 <span class="divider"></span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">天气状况</span>
+          <span class="data-value highlight" id="fence-weather">--</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label">天气系数</span>
+          <span class="data-value" id="fence-weather-factor">--</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label" style="color:#ff6b6b">◆ 核心圈</span>
+          <span class="data-value" id="fence-core-radius">--</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label" style="color:#ffcc00">◆ 缓冲圈</span>
+          <span class="data-value" id="fence-buffer-radius">--</span>
+        </div>
+        <div class="data-row">
+          <span class="data-label" style="color:#4da6ff">◆ 扩展圈</span>
+          <span class="data-value" id="fence-extended-radius">--</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span class="icon-bracket">[</span> 通讯日志 <span class="divider"></span>
+        </div>
+        <div id="comm-log" style="max-height: 100px; overflow-y: auto; font-family: var(--font-tech); font-size: 0.65rem; color: var(--text-secondary); line-height: 1.6;">
+          <div style="color: var(--text-dim);">> 系统初始化完成</div>
+          <div style="color: var(--text-dim);">> 三维场景加载成功</div>
+          <div style="color: var(--accent-cyan);">> 目标 S-8842 已锁定跟踪</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部图例 -->
+    <div class="legend">
+      <div class="legend-item"><span class="legend-dot red"></span> 嫌疑目标</div>
+      <div class="legend-item"><span class="legend-dot blue"></span> 无人车</div>
+      <div class="legend-item"><span class="legend-dot green"></span> 警员</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#ff6b6b;box-shadow:0 0 8px #ff6b6b;"></span> 核心圈</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#ffcc00;box-shadow:0 0 8px #ffcc00;"></span> 缓冲圈</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#4da6ff;box-shadow:0 0 8px #4da6ff;"></span> 扩展圈</div>
+    </div>
+
+    <!-- 底部 -->
+    <div class="bottom-bar">
+      <span><span class="blink">●</span> 实时监控中</span>
+      <span>FPS: <span id="fps-display">60</span></span>
+      <span>数据刷新间隔: 500ms</span>
+      <span>渲染引擎: Three.js</span>
+    </div>
+
+  </div>
+
+  <!-- Three.js Import Map -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    /* ==================== DOM Elements ==================== */
+    const canvas = document.getElementById('three-canvas');
+    const elLng = document.getElementById('coord-lng');
+    const elLat = document.getElementById('coord-lat');
+    const elSpeed = document.getElementById('coord-speed');
+    const elDir = document.getElementById('coord-dir');
+    const elTime = document.getElementById('coord-time');
+    const elTrailCount = document.getElementById('trail-count');
+    const elSugCoord = document.getElementById('sug-coord-text');
+    const elSugEta = document.getElementById('sug-eta');
+    const elFps = document.getElementById('fps-display');
+    const elSysTime = document.getElementById('sys-time');
+    const elCommLog = document.getElementById('comm-log');
+    const btnConfirm = document.getElementById('btn-confirm');
+    const heatmapCanvas = document.getElementById('heatmap-canvas');
+
+    /* ==================== Three.js Setup ==================== */
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x050a14, 0.000025);
+
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 2000);
+    camera.position.set(80, 60, 100);
+    camera.lookAt(0, 0, 0);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.target.set(0, 0, 0);
+    controls.minDistance = 30;
+    controls.maxDistance = 300;
+    controls.maxPolarAngle = Math.PI / 2.3;
+    controls.update();
+
+    /* ==================== Lighting ==================== */
+    const ambientLight = new THREE.AmbientLight(0x1a2a4a, 0.8);
+    scene.add(ambientLight);
+
+    const sunLight = new THREE.DirectionalLight(0xffeedd, 2.5);
+    sunLight.position.set(150, 200, 100);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
+    sunLight.shadow.camera.near = 1;
+    sunLight.shadow.camera.far = 800;
+    sunLight.shadow.camera.left = -150;
+    sunLight.shadow.camera.right = 150;
+    sunLight.shadow.camera.top = 150;
+    sunLight.shadow.camera.bottom = -150;
+    sunLight.shadow.bias = -0.0001;
+    scene.add(sunLight);
+
+    const hemiLight = new THREE.HemisphereLight(0x8899cc, 0x223344, 0.6);
+    scene.add(hemiLight);
+
+    /* ==================== Ground ==================== */
+    const groundGeo = new THREE.PlaneGeometry(400, 400);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0x1a1a2e,
+      roughness: 0.9,
+      metalness: 0.1
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.5;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    /* ==================== Grid ==================== */
+    const gridHelper = new THREE.PolarGridHelper(180, 64, 48, 256, 0x1e3a5f, 0x1e3a5f);
+    gridHelper.position.y = -0.45;
+    scene.add(gridHelper);
+
+    /* ==================== Roads ==================== */
+    function createRoad(x, z, width, length, rotation) {
+      const roadGeo = new THREE.PlaneGeometry(width, length);
+      const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a2a3a, roughness: 0.85, metalness: 0.05 });
+      const road = new THREE.Mesh(roadGeo, roadMat);
+      road.rotation.x = -Math.PI / 2;
+      road.rotation.z = rotation || 0;
+      road.position.set(x, 0.02, z);
+      road.receiveShadow = true;
+      return road;
+    }
+
+    function createRoadMarking(x, z, length, rotation) {
+      const markingGeo = new THREE.PlaneGeometry(0.3, length * 0.7);
+      const markingMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, side: THREE.DoubleSide });
+      const marking = new THREE.Mesh(markingGeo, markingMat);
+      marking.rotation.x = -Math.PI / 2;
+      marking.rotation.z = rotation || 0;
+      marking.position.set(x, 0.04, z);
+      return marking;
+    }
+
+    const roadGroup = new THREE.Group();
+
+    const mainRoads = [
+      { x: 0, z: 0, w: 6, l: 200, r: 0 },
+      { x: 0, z: 0, w: 6, l: 200, r: Math.PI / 2 },
+      { x: -30, z: 0, w: 4, l: 200, r: 0 },
+      { x: 30, z: 0, w: 4, l: 200, r: 0 },
+      { x: 0, z: -30, w: 4, l: 200, r: Math.PI / 2 },
+      { x: 0, z: 30, w: 4, l: 200, r: Math.PI / 2 },
+      { x: -15, z: -15, w: 3, l: 50, r: Math.PI / 4 },
+      { x: 15, z: -15, w: 3, l: 50, r: -Math.PI / 4 },
+    ];
+
+    mainRoads.forEach(r => {
+      roadGroup.add(createRoad(r.x, r.z, r.w, r.l, r.r));
+      if (r.w >= 4) {
+        roadGroup.add(createRoadMarking(r.x, r.z, r.l * 0.6, r.r));
+      }
+    });
+
+    scene.add(roadGroup);
+
+    /* ==================== Buildings ==================== */
+    function createBuilding(x, z, w, d, h, color) {
+      const group = new THREE.Group();
+
+      const bodyGeo = new THREE.BoxGeometry(w, h, d);
+      const bodyMat = new THREE.MeshStandardMaterial({
+        color: color,
+        roughness: 0.5,
+        metalness: 0.4
+      });
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = h / 2;
+      body.castShadow = true;
+      body.receiveShadow = true;
+      group.add(body);
+
+      const edgeGeo = new THREE.EdgesGeometry(bodyGeo);
+      const edgeMat = new THREE.LineBasicMaterial({ color: 0x334466, transparent: true, opacity: 0.3 });
+      const edge = new THREE.LineSegments(edgeGeo, edgeMat);
+      edge.position.y = h / 2;
+      group.add(edge);
+
+      for (let i = 0; i < Math.floor(h / 3); i++) {
+        const windowGeo = new THREE.PlaneGeometry(w * 0.6, 0.3);
+        const windowMat = new THREE.MeshBasicMaterial({
+          color: Math.random() > 0.5 ? 0xffdd88 : 0x88aacc,
+          side: THREE.DoubleSide
+        });
+        const windowPlane = new THREE.Mesh(windowGeo, windowMat);
+        windowPlane.position.set(0, 1.5 + i * 3, d / 2 + 0.01);
+        group.add(windowPlane);
+      }
+
+      group.position.set(x, 0, z);
+      return group;
+    }
+
+    const buildingColors = [
+      0x2a3a5c, 0x1e3254, 0x243550, 0x2c3e5e, 0x1a2a44,
+      0x304060, 0x263a58, 0x1c2e4e, 0x2e4058, 0x22344c
+    ];
+
+    const buildingsGroup = new THREE.Group();
+
+    function isOnRoad(x, z) {
+      for (const r of mainRoads) {
+        const dist = Math.abs(
+          r.r === 0 ? x - r.x :
+          r.r === Math.PI / 2 ? z - r.z : 0
+        );
+        if (dist < r.w / 2 + 1.5) return true;
+      }
+      return Math.abs(x) < 4 || Math.abs(z) < 4 ||
+             Math.abs(x + 30) < 3 || Math.abs(x - 30) < 3 ||
+             Math.abs(z + 30) < 3 || Math.abs(z - 30) < 3;
+    }
+
+    for (let i = -80; i <= 80; i += 6) {
+      for (let j = -80; j <= 80; j += 6) {
+        if (isOnRoad(i, j)) continue;
+        if (Math.random() > 0.55) continue;
+        const w = 2 + Math.random() * 4;
+        const d = 2 + Math.random() * 4;
+        const h = 5 + Math.random() * 40;
+        const color = buildingColors[Math.floor(Math.random() * buildingColors.length)];
+        const building = createBuilding(i + (Math.random() - 0.5) * 2, j + (Math.random() - 0.5) * 2, w, d, h, color);
+        buildingsGroup.add(building);
+      }
+    }
+
+    scene.add(buildingsGroup);
+
+    /* ==================== Dynamic Light Flow (光流) ==================== */
+    const flowLights = [];
+    const flowGroup = new THREE.Group();
+
+    for (let i = 0; i < 200; i++) {
+      const particleGeo = new THREE.SphereGeometry(0.15, 4, 4);
+      const particleMat = new THREE.MeshBasicMaterial({ color: 0x00aaff });
+      const particle = new THREE.Mesh(particleGeo, particleMat);
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 15 + Math.random() * 60;
+      particle.position.set(Math.cos(angle) * dist, 0.3, Math.sin(angle) * dist);
+      particle.userData = { angle, dist, speed: 0.3 + Math.random() * 0.8 };
+      flowGroup.add(particle);
+      flowLights.push(particle);
+    }
+
+    scene.add(flowGroup);
+
+    /* ==================== 3D Spheres (Moving Entities) ==================== */
+    const sphereData = {
+      suspect: {
+        color: 0xff3b3b,
+        pos: new THREE.Vector3(-20, 0, -15),
+        target: new THREE.Vector3(-20, 0, -15),
+        speed: 0.8,
+        label: '嫌疑目标 S-8842',
+        trail: [],
+        maxTrail: 80,
+        glow: null
+      },
+      drone: {
+        color: 0x1e90ff,
+        pos: new THREE.Vector3(25, 0, 20),
+        target: new THREE.Vector3(25, 0, 20),
+        speed: 1.2,
+        label: '无人车 Unit-01',
+        trail: [],
+        maxTrail: 50,
+        glow: null
+      },
+      officer: {
+        color: 0x00e676,
+        pos: new THREE.Vector3(-10, 0, 30),
+        target: new THREE.Vector3(-10, 0, 30),
+        speed: 0.6,
+        label: '警员 Unit-03',
+        trail: [],
+        maxTrail: 40,
+        glow: null
+      }
+    };
+
+    const sphereMeshes = {};
+    const trailLines = {};
+    const glowSpheres = {};
+
+    function createGlowSphere(colorHex, size) {
+      const group = new THREE.Group();
+
+      const innerGeo = new THREE.SphereGeometry(size, 32, 32);
+      const innerMat = new THREE.MeshStandardMaterial({
+        color: colorHex,
+        roughness: 0.3,
+        metalness: 0.6,
+        emissive: colorHex,
+        emissiveIntensity: 0.8
+      });
+      const inner = new THREE.Mesh(innerGeo, innerMat);
+      inner.castShadow = true;
+      group.add(inner);
+
+      const glowGeo = new THREE.SphereGeometry(size * 1.6, 32, 32);
+      const glowMat = new THREE.MeshBasicMaterial({
+        color: colorHex,
+        transparent: true,
+        opacity: 0.18,
+        depthWrite: false
+      });
+      const glow = new THREE.Mesh(glowGeo, glowMat);
+      group.add(glow);
+
+      const ringGeo = new THREE.TorusGeometry(size * 1.2, 0.08, 16, 32);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: colorHex,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = Math.PI / 2;
+      group.add(ring);
+
+      return { group, inner, glow, ring };
+    }
+
+    const suspectGlow = createGlowSphere(0xff3b3b, 0.6);
+    suspectGlow.group.position.copy(sphereData.suspect.pos);
+    suspectGlow.group.position.y = 0.6;
+    scene.add(suspectGlow.group);
+    sphereData.suspect.glow = suspectGlow;
+
+    const droneGlow = createGlowSphere(0x1e90ff, 0.5);
+    droneGlow.group.position.copy(sphereData.drone.pos);
+    droneGlow.group.position.y = 0.5;
+    scene.add(droneGlow.group);
+    sphereData.drone.glow = droneGlow;
+
+    const officerGlow = createGlowSphere(0x00e676, 0.45);
+    officerGlow.group.position.copy(sphereData.officer.pos);
+    officerGlow.group.position.y = 0.45;
+    scene.add(officerGlow.group);
+    sphereData.officer.glow = officerGlow;
+
+    /* ==================== Trail Lines ==================== */
+    function createTrailLine(colorHex) {
+      const mat = new THREE.LineBasicMaterial({
+        color: colorHex,
+        transparent: true,
+        opacity: 0.5,
+        depthTest: false
+      });
+      const geo = new THREE.BufferGeometry();
+      const positions = new Float32Array(300 * 3);
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setDrawRange(0, 0);
+      const line = new THREE.Line(geo, mat);
+      line.renderOrder = 1;
+      line.material.depthTest = false;
+      return line;
+    }
+
+    const suspectTrail = createTrailLine(0xff3b3b);
+    scene.add(suspectTrail);
+    const droneTrail = createTrailLine(0x1e90ff);
+    scene.add(droneTrail);
+    const officerTrail = createTrailLine(0x00e676);
+    scene.add(officerTrail);
+
+    /* ==================== Movement Path ==================== */
+    const pathTimer = { suspect: 0, drone: 0, officer: 0 };
+    const pathParams = {
+      suspect: { cx: -15, cz: -10, rx: 18, rz: 14, period: 8, phase: 0 },
+      drone: { cx: 20, cz: 15, rx: 12, rz: 10, period: 5, phase: 0 },
+      officer: { cx: -5, cz: 25, rx: 10, rz: 8, period: 7, phase: Math.PI / 3 },
+    };
+
+    function getPathPosition(key, t) {
+      const p = pathParams[key];
+      const x = p.cx + Math.cos(t * Math.PI * 2 / p.period + p.phase) * p.rx;
+      const z = p.cz + Math.sin(t * Math.PI * 2 / p.period + p.phase) * p.rz;
+      return new THREE.Vector3(x, 0, z);
+    }
+
+    function addTrailPoint(trail, pos, max) {
+      trail.push(pos.clone());
+      if (trail.length > max) trail.shift();
+    }
+
+    function updateTrailLine(line, trail) {
+      const positions = line.geometry.attributes.position.array;
+      for (let i = 0; i < trail.length; i++) {
+        const idx = i * 3;
+        positions[idx] = trail[i].x;
+        positions[idx + 1] = 0.15;
+        positions[idx + 2] = trail[i].z;
+      }
+      line.geometry.attributes.position.needsUpdate = true;
+      line.geometry.setDrawRange(0, trail.length);
+    }
+
+    /* ==================== Heatmap ==================== */
+    const heatmapCtx = heatmapCanvas.getContext('2d');
+    const heatmapTrail = [];
+
+    function resizeHeatmap() {
+      const container = document.getElementById('heatmap-container');
+      heatmapCanvas.width = container.clientWidth;
+      heatmapCanvas.height = container.clientHeight;
+    }
+    resizeHeatmap();
+    window.addEventListener('resize', resizeHeatmap);
+
+    function drawHeatmap() {
+      const w = heatmapCanvas.width;
+      const h = heatmapCanvas.height;
+      heatmapCtx.clearRect(0, 0, w, h);
+
+      if (heatmapTrail.length < 2) return;
+
+      const allPoints = heatmapTrail.slice(-200);
+
+      for (let i = 0; i < allPoints.length; i++) {
+        const alpha = 0.1 + (i / allPoints.length) * 0.3;
+        const size = 3 + (i / allPoints.length) * 8;
+
+        const normX = (allPoints[i].x + 80) / 160;
+        const normZ = (allPoints[i].z + 80) / 160;
+        const px = normX * w;
+        const py = (1 - normZ) * h;
+
+        const gradient = heatmapCtx.createRadialGradient(px, py, 0, px, py, size);
+        gradient.addColorStop(0, `rgba(255, 59, 59, ${alpha})`);
+        gradient.addColorStop(0.5, `rgba(255, 140, 0, ${alpha * 0.6})`);
+        gradient.addColorStop(1, 'rgba(255, 59, 59, 0)');
+
+        heatmapCtx.fillStyle = gradient;
+        heatmapCtx.fillRect(px - size, py - size, size * 2, size * 2);
+      }
+    }
+
+    /* ==================== GLB Loader (optional) ==================== */
+    const modelGroup = new THREE.Group();
+    scene.add(modelGroup);
+
+    function tryLoadGLB() {
+      const loader = new GLTFLoader();
+      const possiblePaths = [
+        '/city.glb',
+        '/models/city.glb',
+        '/static/city.glb',
+      ];
+
+      function tryPath(index) {
+        if (index >= possiblePaths.length) {
+          logComm('GLB 城市模型未找到，已使用程序化城市');
+          return;
+        }
+        loader.load(
+          possiblePaths[index],
+          (gltf) => {
+            modelGroup.clear();
+            const model = gltf.scene;
+            model.scale.set(0.5, 0.5, 0.5);
+            model.position.set(0, -5, 0);
+            model.traverse((child) => {
+              if (child.isMesh) {
+                child.castShadow = true;
+                child.receiveShadow = true;
+              }
+            });
+            modelGroup.add(model);
+            buildingsGroup.visible = false;
+            roadGroup.visible = false;
+            logComm('GLB 城市模型加载成功');
+          },
+          undefined,
+          () => tryPath(index + 1)
+        );
+      }
+      tryPath(0);
+    }
+
+    /* ==================== Helpers ==================== */
+    function logComm(msg) {
+      const div = document.createElement('div');
+      div.textContent = '> ' + msg;
+      div.style.color = 'var(--text-dim)';
+      elCommLog.appendChild(div);
+      elCommLog.scrollTop = elCommLog.scrollHeight;
+    }
+
+    function getDirection(dx, dz) {
+      if (Math.abs(dx) < 0.01 && Math.abs(dz) < 0.01) return '静止';
+      const angle = Math.atan2(dz, dx) * 180 / Math.PI;
+      if (angle > -22.5 && angle <= 22.5) return '东';
+      if (angle > 22.5 && angle <= 67.5) return '东北';
+      if (angle > 67.5 && angle <= 112.5) return '北';
+      if (angle > 112.5 && angle <= 157.5) return '西北';
+      if (angle > 157.5 || angle <= -157.5) return '西';
+      if (angle > -157.5 && angle <= -112.5) return '西南';
+      if (angle > -112.5 && angle <= -67.5) return '南';
+      if (angle > -67.5 && angle <= -22.5) return '东南';
+      return '未知';
+    }
+
+    /* ==================== Animation ==================== */
+    const clock = new THREE.Clock();
+    let frameCount = 0;
+    let fpsTime = 0;
+    let commandExecuted = false;
+    let interceptStartTime = null;
+
+    function executeCommand() {
+      if (commandExecuted) return;
+      commandExecuted = true;
+      interceptStartTime = performance.now() / 1000;
+      pathParams.drone.cx = sphereData.suspect.pos.x + 5;
+      pathParams.drone.cz = sphereData.suspect.pos.z + 5;
+      pathParams.drone.rx = 4;
+      pathParams.drone.rz = 4;
+      pathParams.drone.period = 2.5;
+
+      btnConfirm.textContent = '✓ 指令已下达';
+      btnConfirm.classList.add('confirmed');
+
+      logComm('指令已下达：无人车 Unit-01 前往拦截坐标 (' +
+        sphereData.suspect.pos.x.toFixed(1) + ', ' + sphereData.suspect.pos.z.toFixed(1) + ')');
+
+      showToast('✓ 指令已通过网络下发至仿真端警力');
+
+      setTimeout(() => {
+        commandExecuted = false;
+        btnConfirm.textContent = '▸ 一键下达确认';
+        btnConfirm.classList.remove('confirmed');
+      }, 5000);
+    }
+
+    window.executeCommand = executeCommand;
+
+    function showToast(msg) {
+      const toast = document.createElement('div');
+      toast.className = 'cmd-toast';
+      toast.textContent = msg;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2600);
+    }
+
+    function animate(timestamp) {
+      requestAnimationFrame(animate);
+
+      const dt = Math.min(clock.getDelta(), 0.1);
+      frameCount++;
+      fpsTime += dt;
+
+      if (fpsTime >= 1) {
+        elFps.textContent = Math.round(frameCount / fpsTime);
+        frameCount = 0;
+        fpsTime = 0;
+      }
+
+      const now = new Date();
+      elSysTime.textContent = now.toLocaleTimeString('zh-CN', { hour12: false });
+
+      pathTimer.suspect += dt;
+      pathTimer.drone += dt;
+      pathTimer.officer += dt;
+
+      const suspectOldPos = sphereData.suspect.pos.clone();
+      sphereData.suspect.pos = getPathPosition('suspect', pathTimer.suspect);
+
+      sphereData.suspect.glow.group.position.x = sphereData.suspect.pos.x;
+      sphereData.suspect.glow.group.position.z = sphereData.suspect.pos.z;
+      sphereData.suspect.glow.ring.rotation.z += dt * 1.5;
+
+      if (suspectOldPos.distanceTo(sphereData.suspect.pos) > 0.05) {
+        addTrailPoint(sphereData.suspect.trail, sphereData.suspect.pos, sphereData.suspect.maxTrail);
+        updateTrailLine(suspectTrail, sphereData.suspect.trail);
+        addTrailPoint(heatmapTrail, sphereData.suspect.pos, 500);
+      }
+
+      sphereData.drone.pos = getPathPosition('drone', pathTimer.drone);
+      sphereData.drone.glow.group.position.x = sphereData.drone.pos.x;
+      sphereData.drone.glow.group.position.z = sphereData.drone.pos.z;
+      sphereData.drone.glow.ring.rotation.z += dt * 2;
+      if (sphereData.drone.pos.distanceTo(sphereData.drone.trail.length > 0 ?
+          sphereData.drone.trail[sphereData.drone.trail.length - 1] : sphereData.drone.pos) > 0.05) {
+        addTrailPoint(sphereData.drone.trail, sphereData.drone.pos, sphereData.drone.maxTrail);
+        updateTrailLine(droneTrail, sphereData.drone.trail);
+      }
+
+      sphereData.officer.pos = getPathPosition('officer', pathTimer.officer);
+      sphereData.officer.glow.group.position.x = sphereData.officer.pos.x;
+      sphereData.officer.glow.group.position.z = sphereData.officer.pos.z;
+      sphereData.officer.glow.ring.rotation.z += dt * 1;
+      if (sphereData.officer.pos.distanceTo(sphereData.officer.trail.length > 0 ?
+          sphereData.officer.trail[sphereData.officer.trail.length - 1] : sphereData.officer.pos) > 0.05) {
+        addTrailPoint(sphereData.officer.trail, sphereData.officer.pos, sphereData.officer.maxTrail);
+        updateTrailLine(officerTrail, sphereData.officer.trail);
+      }
+
+      flowLights.forEach(p => {
+        p.userData.angle += p.userData.speed * dt * 0.3;
+        p.position.x = Math.cos(p.userData.angle) * p.userData.dist;
+        p.position.z = Math.sin(p.userData.angle) * p.userData.dist;
+        p.position.y = 0.35;
+      });
+
+      const suspectSpeed = suspectOldPos.distanceTo(sphereData.suspect.pos) / Math.max(dt, 0.001);
+      const displaySpeed = suspectSpeed * 12;
+
+      const lngBase = 116.404;
+      const latBase = 39.915;
+      const lng = lngBase + sphereData.suspect.pos.x * 0.0008;
+      const lat = latBase + sphereData.suspect.pos.z * 0.0006;
+
+      elLng.textContent = lng.toFixed(5);
+      elLat.textContent = lat.toFixed(5);
+      elSpeed.textContent = displaySpeed.toFixed(1) + ' km/h';
+      elDir.textContent = getDirection(
+        sphereData.suspect.pos.x - suspectOldPos.x,
+        sphereData.suspect.pos.z - suspectOldPos.z
+      );
+      elTime.textContent = now.toLocaleTimeString('zh-CN');
+      elTrailCount.textContent = heatmapTrail.length;
+
+      const interceptLng = lng + 0.003;
+      const interceptLat = lat + 0.002;
+      elSugCoord.textContent = '(' + interceptLng.toFixed(3) + ', ' + interceptLat.toFixed(3) + ')';
+
+      const distToSuspect = sphereData.drone.pos.distanceTo(sphereData.suspect.pos);
+      const eta = distToSuspect * 0.4;
+      elSugEta.textContent = eta.toFixed(1) + ' min';
+
+      if (frameCount % 10 === 0) {
+        drawHeatmap();
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    /* ==================== Dynamic Fence ==================== */
+    const fenceGroup = new THREE.Group();
+    fenceGroup.renderOrder = 0;
+    scene.add(fenceGroup);
+
+    const fenceData = {
+      core: [],
+      buffer: [],
+      extended: [],
+      centerLng: 116.404,
+      centerLat: 39.915,
+      factorDetails: null,
+      lastUpdate: 0
+    };
+
+    // 围栏层级颜色
+    const fenceColors = {
+      core: { fill: 0xff3b3b, border: 0xff6b6b, opacity: 0.15, label: '核心圈' },
+      buffer: { fill: 0xffb300, border: 0xffcc00, opacity: 0.10, label: '缓冲圈' },
+      extended: { fill: 0x1e90ff, border: 0x4da6ff, opacity: 0.06, label: '扩展圈' }
+    };
+
+    function lngLatToScene(lng, lat) {
+      const lngBase = 116.404;
+      const latBase = 39.915;
+      return {
+        x: (lng - lngBase) / 0.0008,
+        z: (lat - latBase) / 0.0006
+      };
+    }
+
+    function createFenceMesh(vertices, colorConfig) {
+      if (!vertices || vertices.length < 3) return null;
+
+      const shape = new THREE.Shape();
+      const points = [];
+      for (const v of vertices) {
+        const pos = lngLatToScene(v.lng, v.lat);
+        points.push(new THREE.Vector2(pos.x, pos.z));
+      }
+
+      shape.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        shape.lineTo(points[i].x, points[i].y);
+      }
+      shape.closePath();
+
+      const group = new THREE.Group();
+
+      // 填充面
+      const fillGeo = new THREE.ShapeGeometry(shape);
+      const fillMat = new THREE.MeshBasicMaterial({
+        color: colorConfig.fill,
+        transparent: true,
+        opacity: colorConfig.opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        depthTest: true
+      });
+      const fillMesh = new THREE.Mesh(fillGeo, fillMat);
+      fillMesh.rotation.x = -Math.PI / 2;
+      fillMesh.position.y = 0.06;
+      fillMesh.renderOrder = 0;
+      group.add(fillMesh);
+
+      // 边界线
+      const edgePoints = [];
+      for (let i = 0; i <= vertices.length; i++) {
+        const v = vertices[i % vertices.length];
+        const pos = lngLatToScene(v.lng, v.lat);
+        edgePoints.push(new THREE.Vector3(pos.x, 0.07, pos.z));
+      }
+      const edgeGeo = new THREE.BufferGeometry().setFromPoints(edgePoints);
+      const edgeMat = new THREE.LineBasicMaterial({
+        color: colorConfig.border,
+        transparent: true,
+        opacity: 0.8,
+        depthTest: true
+      });
+      const edgeLine = new THREE.Line(edgeGeo, edgeMat);
+      edgeLine.renderOrder = 1;
+      group.add(edgeLine);
+
+      // 顶点小球
+      const dotGeo = new THREE.SphereGeometry(0.2, 8, 8);
+      const dotMat = new THREE.MeshBasicMaterial({
+        color: colorConfig.border,
+        transparent: true,
+        opacity: 0.5,
+        depthTest: true
+      });
+      for (const v of vertices) {
+        const pos = lngLatToScene(v.lng, v.lat);
+        const dot = new THREE.Mesh(dotGeo, dotMat);
+        dot.position.set(pos.x, 0.08, pos.z);
+        dot.renderOrder = 1;
+        group.add(dot);
+      }
+
+      return group;
+    }
+
+    function updateFenceVisualization(data) {
+      fenceGroup.clear();
+
+      if (!data || !data.layers) return;
+
+      fenceData.centerLng = data.centerLng;
+      fenceData.centerLat = data.centerLat;
+      fenceData.factorDetails = data.factorDetails;
+      fenceData.lastUpdate = performance.now() / 1000;
+
+      for (const layer of data.layers) {
+        const config = fenceColors[layer.level.toLowerCase()];
+        if (!config || !layer.vertices) continue;
+
+        const fenceMesh = createFenceMesh(layer.vertices, config);
+        if (fenceMesh) {
+          fenceMesh.name = layer.name;
+          fenceGroup.add(fenceMesh);
+        }
+      }
+
+      // 更新右侧面板的围栏信息
+      if (data.factorDetails) {
+        const weather = data.factorDetails.weather || '--';
+        const wf = data.factorDetails.weather_factor || 1.0;
+        document.getElementById('fence-weather').textContent = weather;
+        document.getElementById('fence-weather-factor').textContent = wf.toFixed(2);
+      }
+      if (data.layers) {
+        for (const layer of data.layers) {
+          const lvl = layer.level.toLowerCase();
+          const el = document.getElementById('fence-' + lvl + '-radius');
+          if (el) el.textContent = layer.effectiveRadius.toFixed(2) + 'km';
+          const elV = document.getElementById('fence-' + lvl + '-vertices');
+          if (elV) elV.textContent = layer.sampleCount;
+        }
+      }
+
+      logComm('动态围栏已更新：' + new Date().toLocaleTimeString('zh-CN'));
+    }
+
+    async function fetchDynamicFence(lng, lat) {
+      try {
+        const url = '/api/fence/dynamic-polygon?lng=' + lng + '&lat=' + lat;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        updateFenceVisualization(data);
+      } catch (err) {
+        console.warn('动态围栏获取失败:', err.message);
+        // 降级：生成模拟围栏
+        generateFallbackFence(lng, lat);
+      }
+    }
+
+    function generateFallbackFence(lng, lat) {
+      const lngBase = 116.404;
+      const latBase = 39.915;
+      const cx = (lng - lngBase) / 0.0008;
+      const cz = (lat - latBase) / 0.0006;
+
+      const layers = [
+        { level: 'core', baseR: 8, color: fenceColors.core },
+        { level: 'buffer', baseR: 20, color: fenceColors.buffer },
+        { level: 'extended', baseR: 35, color: fenceColors.extended }
+      ];
+
+      fenceGroup.clear();
+      for (const layer of layers) {
+        // 生成不规则多边形（模拟真实地形约束）
+        const vertexCount = 24;
+        const vertices = [];
+        for (let i = 0; i < vertexCount; i++) {
+          const angle = (Math.PI * 2 / vertexCount) * i;
+          // 使用噪声模拟不同方向的可达距离变化
+          const noise = 0.6 + 0.4 * Math.abs(Math.sin(angle * 3 + cx * 0.1));
+          const dist = layer.baseR * noise;
+          const px = cx + Math.cos(angle) * dist;
+          const pz = cz + Math.sin(angle) * dist;
+          const plng = lngBase + px * 0.0008;
+          const plat = latBase + pz * 0.0006;
+          vertices.push({ lng: plng, lat: plat, distanceKm: dist * 0.12, adjustment: noise });
+        }
+
+        const mesh = createFenceMesh(vertices, layer.color);
+        if (mesh) {
+          mesh.name = layer.level;
+          fenceGroup.add(mesh);
+        }
+      }
+      logComm('动态围栏已生成（本地模拟模式）');
+    }
+
+    // 围栏刷新定时器
+    let fenceRefreshTimer = null;
+
+    function startFenceAutoRefresh(lng, lat) {
+      // 首次立即加载
+      fetchDynamicFence(lng, lat);
+      // 每30秒刷新一次
+      fenceRefreshTimer = setInterval(() => fetchDynamicFence(lng, lat), 30000);
+    }
+
+    /* ==================== Init ==================== */
+    function init() {
+      logComm('三维态势指挥中心启动');
+      tryLoadGLB();
+
+      // 初始加载动态围栏
+      const initLng = 116.404;
+      const initLat = 39.915;
+      startFenceAutoRefresh(initLng, initLat);
+
+      requestAnimationFrame(animate);
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      resizeHeatmap();
+    });
+
+    init();
+  </script>
+</body>
+</html>

@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>警务指挥通信平台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js"></script>
+    <link rel="stylesheet" href="style.css?v=7" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 未登录：虚拟城市 + 过渡 + 弹窗 -->
+      <div class="auth-page" v-if="!isLoggedIn">
+        <img class="auth-badge-logo" src="police-badge.png" alt="警徽" aria-hidden="true" />
+        <div class="auth-badge-watermark" aria-hidden="true"></div>
+
+        <div class="city-hub" v-show="authStage === 'hub' || authStage === 'transition'">
+          <header class="hub-header">
+            <span class="hub-brand">警务指挥通信平台</span>
+            <span class="hub-tag">虚拟态势入口 · 请选择身份</span>
+          </header>
+
+          <div
+            class="hub-scene"
+            :class="{
+              'hub-scene--zoom-command': authStage === 'transition' && pendingRole === 'commander',
+              'hub-scene--zoom-officer': authStage === 'transition' && pendingRole === 'officer',
+              'hub-scene--zoom-guest': authStage === 'transition' && pendingRole === 'guest',
+            }"
+          >
+<!--            <div class="hub-ground"></div>-->
+            <div class="hub-grid-fade"></div>
+
+            <!-- 指挥中心 -->
+            <button
+              type="button"
+              class="hub-node hub-command"
+              :class="{ 'is-hover': hubHover === 'command' }"
+              @mouseenter="hubHover = 'command'"
+              @mouseleave="hubHover = ''"
+              @click="enterPortal('commander')"
+              aria-label="进入指挥中心"
+            >
+              <div class="hub-command-screen">
+                <div class="data-stream"></div>
+                <div class="data-stream data-stream--2"></div>
+              </div>
+              <div class="hub-command-base"></div>
+              <span class="hub-float-tip" v-show="hubHover === 'command'">进入指挥中心</span>
+            </button>
+
+            <!-- 警员 / 巡逻 -->
+            <button
+              type="button"
+              class="hub-node hub-officer"
+              :class="{ 'is-hover': hubHover === 'officer' }"
+              @mouseenter="hubHover = 'officer'"
+              @mouseleave="hubHover = ''"
+              @click="enterPortal('officer')"
+              aria-label="一线警员入口"
+            >
+              <div class="hub-officer-group">
+                <div class="hub-figure hub-figure--1"></div>
+                <div class="hub-figure hub-figure--2"></div>
+                <div class="hub-figure hub-figure--3"></div>
+              </div>
+              <div class="hub-patrol-car" aria-hidden="true">
+                <span class="light l1"></span>
+                <span class="light l2"></span>
+              </div>
+<!--              <div class="hub-map-silhouette"></div>-->
+              <span class="hub-float-tip" v-show="hubHover === 'officer'">一线警员入口</span>
+            </button>
+
+            <!-- 公众服务 -->
+            <button
+              type="button"
+              class="hub-node hub-guest"
+              :class="{ 'is-hover': hubHover === 'guest' }"
+              @mouseenter="hubHover = 'guest'"
+              @mouseleave="hubHover = ''"
+              @click="enterPortal('guest')"
+              aria-label="公众安全信息"
+            >
+              <div class="hub-guard">
+                <div class="guard-hat"></div>
+                <div class="guard-face"></div>
+                <div class="guard-body"></div>
+              </div>
+<!--              <span class="hub-guest-ribbon">公众服务</span>-->
+              <span class="hub-float-tip hub-float-tip--wide" v-show="hubHover === 'guest'"
+                >平安城市助手 · 实时事件地图</span
+              >
+            </button>
+          </div>
+        </div>
+
+        <div class="auth-transition" v-show="authStage === 'transition'" aria-live="polite">
+          <div class="auth-transition-inner">
+            <p class="identity-line">{{ identityLine }}</p>
+            <div class="identity-scan"></div>
+          </div>
+        </div>
+
+        <div
+          class="auth-modal-backdrop"
+          v-show="authStage === 'modal'"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div class="auth-modal" :class="'theme-' + pendingRole" @click.stop>
+            <template v-if="pendingRole === 'guest'">
+              <h2>公众访问</h2>
+              <p class="auth-modal-lead">欢迎来到平安城市助手浏览公示信息。高级处警能力仅对执法人员开放。</p>
+              <div class="auth-field-modal">
+                <label for="g-nick">称呼（可选）</label>
+                <input id="g-nick" type="text" v-model="guestNickname" placeholder="例如：市民" />
+              </div>
+              <div class="auth-field-modal">
+                <label>人机验证：{{ captchaA }} + {{ captchaB }} = ？</label>
+                <input type="text" inputmode="numeric" v-model="captchaUser" placeholder="请输入结果" />
+              </div>
+              <div class="auth-error" v-if="authError">{{ authError }}</div>
+              <div class="auth-modal-actions">
+                <button type="button" class="btn btn-ghost" @click="backToHub">返回枢纽</button>
+                <button type="button" class="btn btn-ghost" @click="refreshCaptcha">换一题</button>
+              </div>
+              <button type="button" class="auth-submit-modal primary" @click="guestVerifiedEnter">
+                验证并进入
+              </button>
+              <button type="button" class="auth-submit-modal ghost" @click="guestQuickEnter">
+                快速浏览（仅公示信息）
+              </button>
+            </template>
+
+            <template v-else>
+              <h2>{{ isLoginMode ? '登录' : '注册' }} · {{ pendingRole === 'commander' ? '指挥端' : '警员端' }}</h2>
+              <div class="auth-field-modal">
+                <label for="auth-user">用户名</label>
+                <input id="auth-user" type="text" v-model="username" autocomplete="username" />
+              </div>
+              <div class="auth-field-modal">
+                <label for="auth-pass">密码</label>
+                <input id="auth-pass" type="password" v-model="password" autocomplete="current-password" />
+              </div>
+              <div class="auth-field-modal" v-if="!isLoginMode">
+                <label for="auth-pass2">确认密码</label>
+                <input id="auth-pass2" type="password" v-model="confirmPassword" autocomplete="new-password" />
+              </div>
+              <button class="auth-submit-modal primary" @click="handleAuth" :disabled="isProcessingAuth">
+                {{ isProcessingAuth ? '处理中…' : (isLoginMode ? '登录' : '注册') }}
+              </button>
+              <div class="auth-error" v-if="authError">{{ authError }}</div>
+              <p class="auth-switch">
+                <template v-if="isLoginMode">还没有账号？<a href="#" @click.prevent="switchToRegister">注册</a></template>
+                <template v-else>已有账号？<a href="#" @click.prevent="switchToLogin">登录</a></template>
+              </p>
+              <button type="button" class="btn-text-back" @click="backToHub">← 返回虚拟枢纽</button>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- 已登录主界面 -->
+      <div class="app-main" v-else>
+        <div class="guest-intro-overlay" v-if="userRole === 'guest' && showGuestIntro">
+          <div class="guest-intro-card">
+            <h2>欢迎来到平安城市助手</h2>
+            <p>
+              在这里您可以了解实时安全信息，及时规避风险。地图与事件均为<strong>公示级</strong>示例数据，精确位置已做模糊处理。
+            </p>
+            <p class="muted">部分高级功能仅限执法人员使用。</p>
+            <button type="button" class="btn btn-primary" @click="dismissGuestIntro">我知道了</button>
+          </div>
+        </div>
+
+        <header class="top">
+          <div>
+            <div class="header-logo">
+              <span class="jing-img" aria-hidden="true">
+                <svg width="44" height="44" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="32" cy="32" r="30" fill="#1e3a5f" stroke="#3b82f6" stroke-width="2" />
+                  <path
+                    fill="#fbbf24"
+                    d="M32 12l20 10v20c0 14-9 26-20 28-11-2-20-14-20-28V22L32 12z"
+                  />
+                  <path
+                    fill="#0f172a"
+                    d="M32 26c-3 0-5 2-5 5s2 5 5 5 5-2 5-5-2-5-5-5zm0 14c-6 0-11-2-11-5v-2c5 4 11 6 11 6s6-2 11-6v2c0 3-5 5-11 5z"
+                  />
+                </svg>
+              </span>
+              <div>
+                <h1>警务指挥通信平台</h1>
+                <p class="role-pill">{{ roleTitle }} <span v-if="userRole === 'officer' && averageRating > 0" class="rating-badge" :class="{'low': averageRating < 3, 'medium': averageRating >= 3 && averageRating < 4, 'high': averageRating >= 4}">{{ averageRating.toFixed(1) }}★</span></p>
+              </div>
+            </div>
+            <p class="sub">
+              前端 Vue 3（CDN）+ 本页样式。后端同源 REST / WebSocket。当前站点：<strong>{{ origin }}</strong>
+            </p>
+          </div>
+          <div class="header-actions">
+            <div class="pill" :class="wsPillClass" v-if="userRole === 'commander'">
+              <span class="dot"></span>
+              {{ wsLabel }}
+            </div>
+            <span class="pill" :class="dutyStatus === '执勤中' ? 'on' : 'off'" v-if="userRole === 'officer'">{{ dutyStatus }}</span>
+            <button type="button" class="btn-logout" @click="logout">退出</button>
+          </div>
+        </header>
+
+        <!-- ========== 指挥端 ========== -->
+        <div class="grid" v-if="userRole === 'commander'">
+          <section class="card span-2">
+            <h2>全局事件与态势 <span class="tag">指挥</span></h2>
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" :disabled="eventsLoading" @click="loadCommanderEvents">
+                <span v-if="eventsLoading" class="spin">⟳</span>
+                {{ eventsLoading ? '加载中…' : '刷新事件' }}
+              </button>
+            </div>
+            <p class="hint">接收多源上报，统一分类、优先级与分派。</p>
+            <div class="table-like">
+              <div class="table-row table-head">
+                <span>编号</span><span>类型</span><span>优先级</span><span>状态</span><span>区域</span><span>操作</span>
+              </div>
+              <div class="table-row" v-for="ev in commanderEvents" :key="ev.id">
+                <span>{{ ev.id }}</span><span>{{ ev.type }}</span><span>{{ ev.priority }}</span
+                ><span>{{ ev.status }}</span><span>{{ ev.region }}</span>
+                <span>
+                  <button type="button" class="btn btn-primary btn-sm" @click="issueCommand(ev)">下达指令</button>
+                </span>
+              </div>
+              <div v-if="commanderEvents.length === 0 && !eventsLoading" class="table-row">
+                <span colspan="5">暂无事件</span>
+              </div>
+            </div>
+            <p class="hint">态势分析、预警模型、对内对外发布等可在后端接入后与本视图联动。</p>
+          </section>
+
+          <section class="card span-2">
+            <h2>在线警务人员 <span class="tag">实时</span></h2>
+            <p class="hint">显示当前在线的警务人员及其状态。</p>
+            <div class="table-like">
+              <div class="table-row table-head police-officer">
+                <span>编号</span><span>姓名</span><span>状态</span><span>交通方式</span><span>操作</span>
+              </div>
+              <div class="table-row police-officer" v-for="officer in connectedOfficers" :key="officer.sessionId">
+                <span>{{ officer.unitId }}</span><span>{{ officer.name }} <span class="rating-badge" :class="{'low': getOfficerRating(officer.name) < 3, 'medium': getOfficerRating(officer.name) >= 3 && getOfficerRating(officer.name) < 4, 'high': getOfficerRating(officer.name) >= 4}" v-if="getOfficerRating(officer.name) > 0">{{ getOfficerRating(officer.name).toFixed(1) }}★</span><span v-else>(暂无)</span></span>
+                <span>
+                  <span class="status-badge" :class="'status-' + officer.status">
+                    {{ officer.status }}
+                  </span>
+                </span>
+                <span>{{ officer.transportMode || '步行' }}</span>
+                <span>
+                  <button type="button" class="btn btn-primary btn-sm" @click="currentChatTarget = officer; focusTextarea()">对话</button>
+                </span>
+              </div>
+              <div v-if="connectedOfficers.length === 0" class="table-row police-officer">
+                <span colspan="5">暂无在线警务人员</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <h2>安全隐患审核 <span class="tag">指挥</span></h2>
+            <p class="hint">审核公众上报的安全隐患，通过后转为低优先级事件。</p>
+            <div class="table-like">
+              <div class="table-row table-head">
+                <span>编号</span><span>方位</span><span>说明</span><span>操作</span>
+              </div>
+              <div class="table-row" v-for="(report, index) in safetyReports" :key="index">
+                <span>H-{{ String(index + 1).padStart(4, '0') }}</span>
+                <span>{{ report.vague }}</span>
+                <span>{{ report.text }}</span>
+                <span>
+                  <button type="button" class="btn btn-primary btn-sm" @click="approveSafetyReport(index)">通过</button>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="rejectSafetyReport(index)">拒绝</button>
+                </span>
+              </div>
+              <div v-if="safetyReports.length === 0" class="table-row">
+                <span colspan="4">暂无待审核的安全隐患</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <h2>事件反馈机制 <span class="tag">指挥</span></h2>
+            <p class="hint">查看公众对警员处理事件的评价和打分。</p>
+            <div class="table-like">
+              <div class="table-row table-head">
+                <span>事件</span>
+                <span>警员</span>
+                <span>评分</span>
+                <span>意见</span>
+                <span>时间</span>
+                <span>操作</span>
+              </div>
+              <div v-for="feedback in eventFeedbacks" :key="feedback.id" class="table-row">
+                <span>{{ feedback.eventType }} - {{ feedback.eventRegion }}</span>
+                <span>{{ feedback.officerName }}</span>
+                <span class="rating-badge" :class="{'low': feedback.rating < 3, 'medium': feedback.rating >= 3 && feedback.rating < 4, 'high': feedback.rating >= 4}">{{ feedback.rating }}★</span>
+                <span>{{ feedback.comment }}</span>
+                <span>{{ feedback.time }}</span>
+                <span>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="deleteEventFeedback(feedback.id)">删除</button>
+                </span>
+              </div>
+              <div v-if="eventFeedbacks.length === 0" class="table-row">
+                <span colspan="6">暂无反馈记录</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>最近警力调度 <span class="tag">REST</span></h2>
+            <p class="hint">围栏内可用警力中选取距事发点最近单位；后端不可用时使用本地近似算法。</p>
+            <button class="btn btn-primary location-btn" @click="getCurrentLocation">📍 获取当前位置</button>
+            <div class="address-info" v-if="incidentAddress">{{ incidentAddress }}</div>
+            <label>事发点坐标（经度 / 纬度）</label>
+            <div class="field-row">
+              <input v-model.number="dispatch.incidentLng" type="number" step="0.000001" />
+              <input v-model.number="dispatch.incidentLat" type="number" step="0.000001" />
+            </div>
+            <div class="list-block" v-for="(v, i) in dispatch.fenceVertices" :key="'f' + i">
+              <div class="head">
+                <span>围栏顶点 {{ i + 1 }}</span>
+                <button
+                  type="button"
+                  class="btn btn-ghost"
+                  style="padding: 0.2rem 0.5rem; font-size: 0.75rem"
+                  @click="removeFence(i)"
+                  v-if="dispatch.fenceVertices.length > 3"
+                >
+                  删除
+                </button>
+              </div>
+              <div class="mini-grid">
+                <div><label>经度</label><input v-model.number="v.lng" type="number" step="0.000001" /></div>
+                <div><label>纬度</label><input v-model.number="v.lat" type="number" step="0.000001" /></div>
+              </div>
+            </div>
+            <div class="toolbar">
+              <button type="button" class="btn btn-ghost" @click="addFenceVertex">+ 围栏顶点</button>
+              <button type="button" class="btn btn-primary" @click="generateDynamicFence">🎯 生成动态围栏</button>
+              <button type="button" class="btn btn-ghost" @click="resetFence">↺ 重置</button>
+            </div>
+            <div class="list-block" v-for="(u, i) in dispatch.units" :key="'u' + i">
+              <div class="head">
+                <span>警力 {{ i + 1 }} · {{ u.name || '（未命名）' }}</span>
+                <button
+                  type="button"
+                  class="btn btn-ghost"
+                  style="padding: 0.2rem 0.5rem; font-size: 0.75rem"
+                  @click="removeUnit(i)"
+                  v-if="dispatch.units.length > 1"
+                >
+                  删除
+                </button>
+              </div>
+              <div class="field-row" style="grid-template-columns: 1fr 1fr 1fr 1fr">
+                <div><label>编号</label><input v-model="u.unitId" /></div>
+                <div><label>名称</label><input v-model="u.name" /></div>
+                <div>
+                  <label>警种</label>
+                  <select v-model="u.policeType">
+                    <option value="巡逻警">巡逻警</option>
+                    <option value="交警">交警</option>
+                    <option value="刑警">刑警</option>
+                    <option value="特警">特警</option>
+                  </select>
+                </div>
+                <div>
+                  <label>可用</label>
+                  <select v-model="u.available">
+                    <option :value="true">是</option>
+                    <option :value="false">否</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field-row" style="grid-template-columns: 1fr 1fr">
+                <div>
+                  <label>交通方式</label>
+                  <select v-model="u.transportMode">
+                    <option value="步行">步行</option>
+                    <option value="骑行">骑行</option>
+                    <option value="开车">开车</option>
+                  </select>
+                </div>
+                <div>
+                  <label>备注</label>
+                  <input v-model="u.remark" placeholder="例如：配备警车" />
+                </div>
+              </div>
+              <div class="mini-grid">
+                <div><label>经度</label><input v-model.number="u.lng" type="number" step="0.000001" /></div>
+                <div><label>纬度</label><input v-model.number="u.lat" type="number" step="0.000001" /></div>
+              </div>
+            </div>
+            <div class="toolbar">
+              <button type="button" class="btn btn-ghost" @click="addUnit">+ 警力</button>
+            </div>
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" :disabled="dispatchLoading" @click="autoAssignEvents">
+                <span v-if="dispatchLoading" class="spin">⟳</span>
+                {{ dispatchLoading ? '调配中…' : '🔄 围栏算法自动调配' }}
+              </button>
+            </div>
+            <div v-if="dispatchError" class="result-box err">{{ dispatchError }}</div>
+            <div v-else-if="dispatchResult !== null" class="result-box">{{ dispatchResultText }}</div>
+          </section>
+
+          <section class="card">
+            <h2>指令通道 <span class="tag">WebSocket</span></h2>
+            <p class="hint">路径 <code style="color: var(--accent)">/ws/command</code>，对应后端 <code>CommandEnvelope</code>。</p>
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" @click="toggleWs" :disabled="wsConnecting">
+                {{ wsConnecting ? '连接中…' : ws && ws.readyState === 1 ? '断开' : '连接' }}
+              </button>
+            </div>
+            
+            <!-- 连接请求列表 -->
+            <div v-if="connectionRequests.length > 0" class="connection-requests">
+              <h3>连接请求</h3>
+              <div v-for="req in connectionRequests" :key="req.sessionId" class="request-item">
+                <div class="request-info">
+                  <span>警员：{{ req.name }} ({{ req.unitId }})</span>
+                </div>
+                <div class="request-actions">
+                  <button type="button" class="btn btn-primary btn-sm" @click="handleConnectionRequest(req.sessionId, true, '同意连接')">接受</button>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="handleConnectionRequest(req.sessionId, false, '拒绝连接')">拒绝</button>
+                </div>
+              </div>
+            </div>
+            
+            <!-- 已连接警员列表 -->
+            <div v-if="connectedOfficers.length > 0" class="connection-requests">
+              <h3>已连接警员</h3>
+              <div v-for="officer in connectedOfficers" :key="officer.sessionId" class="request-item">
+                <div class="request-info">
+                  <span @click="currentChatTarget = officer" style="cursor: pointer; text-decoration: underline;">{{ officer.name }} ({{ officer.unitId }})</span>
+                  <span class="status-badge" :class="'status-' + officer.status">
+                    {{ officer.status }}
+                  </span>
+                </div>
+                <div class="request-actions">
+                  <button type="button" class="btn btn-ghost btn-sm" @click="currentChatTarget = officer; focusTextarea()">对话</button>
+                </div>
+              </div>
+            </div>
+            
+            <!-- 当前对话目标 -->
+            <div v-if="currentChatTarget" class="connection-status accepted">
+              <span>当前对话：{{ currentChatTarget.name }} ({{ currentChatTarget.unitId }})</span>
+            </div>
+            
+            <label>消息内容</label>
+            <textarea v-model="wsForm.payloadPlain" style="margin-bottom: 0.75rem" placeholder="输入消息内容..."></textarea>
+            <input type="hidden" v-model="wsForm.type" value="MESSAGE" />
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" :disabled="!canSendWs" @click="sendWs">发送消息</button>
+              <button type="button" class="btn btn-ghost" @click="clearWsLog">清空日志</button>
+            </div>
+            <div class="log" ref="logEl">
+              <div v-if="!wsLogs.length" class="line">（日志）</div>
+              <div v-for="(l, i) in wsLogs" :key="i" class="line" :class="[l.dir, { 'commander': l.isCommander }]">{{ l.text }}</div>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <h2>高德地图 <span class="tag">可选</span></h2>
+            <p class="hint">Key 仅存浏览器 localStorage。</p>
+            <div class="field-row" style="grid-template-columns: 1fr 1fr">
+              <div><label>Key</label><input v-model="amapKey" /></div>
+              <div><label>securityJsCode</label><input v-model="amapSec" /></div>
+            </div>
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" @click="saveAmapAndLoad" :disabled="mapLoading">加载地图</button>
+              <button type="button" class="btn btn-ghost" @click="destroyMap" v-if="mapLoaded">销毁</button>
+            </div>
+            <div class="map-shell">
+              <div class="map-placeholder" v-show="!mapLoaded">
+                <div>
+                  <template v-if="mapLoading">加载中…</template>
+                  <template v-else-if="!amapKey || !amapSec">填写 Key 与密钥后加载</template>
+                  <template v-else-if="mapError">{{ mapError }}</template>
+                  <template v-else>等待加载</template>
+                </div>
+              </div>
+              <div id="mapRoot" v-show="mapLoaded" class="map-root-el"></div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ========== 警员端 ========== -->
+        <div class="officer-app" v-else-if="userRole === 'officer'">
+          <div class="officer-stats">
+            <div class="stat-card" :class="{ 'stat-card--on': dutyStatus === '执勤中' }">
+              <span class="stat-ico">🛡️</span>
+              <div>
+                <div class="stat-label">执勤状态</div>
+                <div class="stat-value">{{ dutyStatus }}</div>
+              </div>
+              <select v-model="dutyStatus" class="duty-select">
+                <option value="执勤中">执勤中</option>
+                <option value="办案中">办案中</option>
+              </select>
+            </div>
+            <div class="stat-card">
+              <span class="stat-ico">🚶</span>
+              <div>
+                <div class="stat-label">交通方式</div>
+                <div class="stat-value">{{ transportMode }}</div>
+              </div>
+              <select v-model="transportMode" class="duty-select" @change="updateTransportMode">
+                <option value="步行">步行</option>
+                <option value="骑行">骑行</option>
+                <option value="开车">开车</option>
+              </select>
+            </div>
+            <div class="stat-card">
+              <span class="stat-ico">📋</span>
+              <div>
+                <div class="stat-label">指挥任务</div>
+                <div class="stat-value">{{ officerOrders.length }} 条</div>
+              </div>
+              <span class="stat-hint">红色图钉</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-ico">📍</span>
+              <div>
+                <div class="stat-label">周边警情</div>
+                <div class="stat-value">{{ nearbyIncidents.length }} 起</div>
+              </div>
+              <span class="stat-hint">橙色图钉</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-ico">🤝</span>
+              <div>
+                <div class="stat-label">可援助</div>
+                <div class="stat-value">{{ volunteerIncidents.length }} 起</div>
+              </div>
+              <span class="stat-hint">蓝色图钉</span>
+            </div>
+          </div>
+
+          <section class="card span-2 map-card-officer">
+            <div class="map-card-head">
+              <h2>执勤态势地图 <span class="tag">高德</span></h2>
+              <p class="hint">点击图钉可查看<strong>逆地理编码地址</strong>与坐标。绿点为您当前位置（需先定位）。</p>
+            </div>
+            <div class="map-legend officer-legend">
+              <span><i class="dot dot--cmd"></i>指挥任务</span>
+              <span><i class="dot dot--near"></i>附近警情</span>
+              <span><i class="dot dot--vol"></i>可援助</span>
+              <span><i class="dot dot--me"></i>我的位置</span>
+            </div>
+            <div class="field-row amap-inline">
+              <div><label>Web 端 Key</label><input v-model="amapKey" placeholder="与指挥端共用本地保存" /></div>
+              <div><label>securityJsCode</label><input v-model="amapSec" placeholder="安全密钥" /></div>
+            </div>
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" @click="saveAmapAndLoadOfficer" :disabled="mapLoading">
+                {{ mapLoading ? '加载中…' : '保存密钥并打开地图' }}
+              </button>
+              <button type="button" class="btn btn-ghost" @click="destroyMap" v-if="mapLoaded">关闭地图</button>
+              <button type="button" class="btn btn-ghost" @click="getCurrentLocation">📍 更新我的位置</button>
+            </div>
+            <p class="loc-summary" v-if="officerAddress">
+              <strong>当前位置：</strong>{{ officerAddress }}
+            </p>
+            <div class="map-shell map-shell--tall">
+              <div class="map-placeholder" v-show="!mapLoaded">
+                <div>
+                  <template v-if="mapLoading">地图加载中…</template>
+                  <template v-else-if="!amapKey || !amapSec">请填写高德 Key 与安全密钥后打开地图（仅保存在本机）。</template>
+                  <template v-else-if="mapError">{{ mapError }}</template>
+                  <template v-else>填写密钥后点击「保存密钥并打开地图」</template>
+                </div>
+              </div>
+              <div id="mapRootOfficer" v-show="mapLoaded" class="map-root-el"></div>
+            </div>
+          </section>
+
+          <div class="grid officer-grid-main">
+            <section class="card officer-orders-panel">
+              <h2>指挥下达任务 <span class="tag">优先处理</span></h2>
+              <p class="hint">以下为演示坐标，可与地图上红色图钉对照。</p>
+              <div
+                class="order-card"
+                :class="['pri-' + (o.priority === '高' ? 'high' : 'mid'), { 'is-focus': mapFocusId === 'order-' + o.id }]"
+                v-for="o in officerOrders"
+                :key="o.id"
+              >
+                <div class="order-bar"></div>
+                <div class="order-body">
+                  <div class="order-head">
+                    <span class="oid">{{ o.id }}</span>
+                    <span class="badge-pri" :class="'b-' + (o.priority === '高' ? 'high' : 'mid')">{{ o.priority }}优先级</span>
+                    <span class="otime">截止 {{ o.deadline }}</span>
+                  </div>
+                  <h3 class="order-title">{{ o.title }}</h3>
+                  <p class="order-place">📍 {{ o.place }}</p>
+                  <p class="order-coord text-mono">{{ o.lng.toFixed(4) }}, {{ o.lat.toFixed(4) }}</p>
+                  <p class="order-detail">{{ o.detail }}</p>
+                  <div class="order-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" @click="focusMapItem('order', o.id)">在地图上查看</button>
+                    <button type="button" class="btn btn-primary btn-sm" @click="completeOrder(o.id)">任务完成</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="officer-side-col">
+              <section class="card">
+                <h2>附近待处理 <span class="tag">周边</span></h2>
+
+              </section>
+
+              <section class="card">
+                <h2>可自主援助</h2>
+                <p class="hint">非紧急支援，报名后由指挥确认。</p>
+
+              </section>
+            </div>
+          </div>
+
+          <section class="card span-2 report-card">
+            <h2>现场事件上报</h2>
+            <p class="hint">填写后上报指挥端；可附带 GPS 便于地图上复核。</p>
+            <div class="field-row" style="grid-template-columns: 1fr 1fr 2fr">
+              <div>
+                <label>类型</label>
+                <select v-model="reportDraft.type">
+                  <option>治安</option>
+                  <option>交通</option>
+                  <option>求助</option>
+                  <option>其他</option>
+                </select>
+              </div>
+              <div>
+                <label>优先级</label>
+                <select v-model="reportDraft.priority">
+                  <option>低</option>
+                  <option>中</option>
+                  <option>高</option>
+                </select>
+              </div>
+              <div>
+                <label>简要说明</label>
+                <input v-model="reportDraft.text" placeholder="时间、地点、现场情况" />
+              </div>
+            </div>
+            <label class="switch-row">
+              <input type="checkbox" v-model="reportDraft.useLocation" />
+              <span>附加当前 GPS 位置（与上报一并提交）</span>
+            </label>
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" @click="submitOfficerReport">上报指挥端</button>
+              <button type="button" class="btn btn-ghost" @click="getCurrentLocation">先获取当前位置</button>
+            </div>
+          </section>
+
+          <section class="card span-2">
+            <h2>通讯与协同 <span class="tag">WebSocket</span></h2>
+            <p class="hint">与指挥中心实时通信，接收指令并上报状态。路径 <code style="color: var(--accent)">/ws/command</code>。</p>
+            <div class="pill" :class="wsPillClass" v-if="userRole === 'officer'">
+              <span class="dot"></span>
+              {{ wsLabel }}
+            </div>
+            
+            <!-- 连接请求按钮 -->
+            <div class="toolbar" v-if="wsReadyState === 1">
+              <button type="button" class="btn btn-primary" @click="sendConnectionRequest">请求连接指挥中心</button>
+            </div>
+            
+            <!-- 连接状态提示 -->
+            <div v-if="pendingConnection" class="connection-status" :class="pendingConnection.accepted ? 'accepted' : 'rejected'">
+              <span>{{ pendingConnection.accepted ? '连接已接受' : '连接已拒绝' }}</span>
+              <span v-if="pendingConnection.reason">{{ pendingConnection.reason }}</span>
+            </div>
+            
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" @click="toggleWs" :disabled="wsConnecting">
+                {{ wsConnecting ? '连接中…' : ws && ws.readyState === 1 ? '断开' : '连接' }}
+              </button>
+            </div>
+            <label>消息内容</label>
+            <textarea v-model="wsForm.payloadPlain" style="margin-bottom: 0.75rem" placeholder="输入消息内容..."></textarea>
+            <input type="hidden" v-model="wsForm.type" value="MESSAGE" />
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" :disabled="!canSendWs" @click="sendWs">发送消息</button>
+              <button type="button" class="btn btn-ghost" @click="clearWsLog">清空日志</button>
+            </div>
+            <div class="log" ref="logEl">
+              <div v-if="!wsLogs.length" class="line">（日志）</div>
+              <div v-for="(l, i) in wsLogs" :key="i" class="line" :class="[l.dir, { 'commander': l.isCommander }]">{{ l.text }}</div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ========== 游客端 ========== -->
+        <div class="guest-app" v-else-if="userRole === 'guest'">
+          <section class="card span-2 map-card-guest">
+            <div class="map-card-head">
+              <h2>公示事件地图 <span class="tag">高德 · 脱敏</span></h2>
+              <p class="hint">图钉位置为<strong>模糊后</strong>的参考点，点击图钉可看周边地址解析与出行提示。</p>
+            </div>
+            <div class="map-legend guest-legend">
+              <span><i class="dot dot--pub"></i>公示事件</span>
+            </div>
+            <div class="field-row amap-inline">
+              <div><label>Web 端 Key</label><input v-model="amapKey" placeholder="本地保存，与执勤端相同密钥即可" /></div>
+              <div><label>securityJsCode</label><input v-model="amapSec" /></div>
+            </div>
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" @click="saveAmapAndLoadGuest" :disabled="mapLoading">
+                {{ mapLoading ? '加载中…' : '保存并打开地图' }}
+              </button>
+              <button type="button" class="btn btn-ghost" @click="destroyMap" v-if="mapLoaded">关闭地图</button>
+            </div>
+            <div class="map-shell map-shell--tall">
+              <div class="map-placeholder" v-show="!mapLoaded">
+                <div>
+                  <template v-if="mapLoading">地图加载中…</template>
+                  <template v-else-if="!amapKey || !amapSec">请输入高德开放平台申请的 Key 与安全密钥。</template>
+                  <template v-else-if="mapError">{{ mapError }}</template>
+                  <template v-else>点击按钮加载地图查看事件位置</template>
+                </div>
+              </div>
+              <div id="mapRootGuest" v-show="mapLoaded" class="map-root-el"></div>
+            </div>
+          </section>
+
+          <div class="grid guest-grid-2">
+            <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 1rem;">
+              <section class="card">
+              <h2>安全隐患上报 <span class="tag">人工审核</span></h2>
+              <p class="hint">填写后上报指挥端，审核通过后转为低优先级事件。</p>
+              
+              <!-- WebSocket连接状态 -->
+              <div class="pill" :class="wsPillClass" v-if="userRole === 'guest'">
+                <span class="dot"></span>
+                {{ wsLabel }}
+              </div>
+              <div class="toolbar">
+                <button type="button" class="btn btn-ghost" @click="toggleWs" :disabled="wsConnecting">
+                  {{ wsConnecting ? '连接中…' : ws && ws.readyState === 1 ? '断开' : '连接' }}
+                </button>
+              </div>
+              
+              <!-- 安全隐患表单 -->
+              <label>大致方位</label>
+              <input v-model="guestFeedback.vague" placeholder="例：某商圈附近" />
+              
+              <label style="margin-top: 0.5rem">说明</label>
+              <textarea v-model="guestFeedback.text" placeholder="请简要描述隐患情况..."></textarea>
+              
+              <div class="feedback-success" v-if="feedbackStatus === 'success'">
+                <span class="status-icon">✓</span> 上报成功，已通知指挥中心
+              </div>
+              <div class="feedback-error" v-if="feedbackStatus === 'error'">
+                <span class="status-icon">!</span> 上报失败，请检查连接
+              </div>
+              
+              <div class="toolbar">
+                <button type="button" class="btn btn-primary" @click="submitGuestFeedback" :disabled="!guestFeedback.vague.trim() || !guestFeedback.text.trim()">
+                  提交上报
+                </button>
+              </div>
+            </section>
+
+            <section class="card">
+            <h2>事件反馈 <span class="tag">公众</span></h2>
+            <p class="hint">对警员处理的事件进行评价和打分，帮助改进服务质量。</p>
+            <label>选择事件</label>
+            <select v-model="selectedEventForFeedback">
+              <option value="">请选择事件</option>
+              <option v-for="event in completedEvents" :key="event.id" :value="event.id">
+                {{ event.type }} - {{ event.region }}
+              </option>
+            </select>
+            
+            <label style="margin-top: 0.5rem">服务评价</label>
+            <div class="rating">
+              <span 
+                v-for="star in 5" 
+                :key="star"
+                class="star" 
+                :class="{ active: feedbackRating >= star }"
+                @click="feedbackRating = star"
+              >
+                ★
+              </span>
+              <span class="rating-text">{{ getRatingText(feedbackRating) }}</span>
+            </div>
+            
+            <label style="margin-top: 0.5rem">详细意见</label>
+            <textarea v-model="feedbackComment" placeholder="请输入您的意见和建议..."></textarea>
+            
+            <div class="toolbar">
+              <button type="button" class="btn btn-primary" @click="submitEventFeedback" :disabled="!selectedEventForFeedback || feedbackRating === 0">
+                提交反馈
+              </button>
+            </div>
+          </section>
+            </div>
+
+            <section class="card guest-picks">
+              <h2>一键查看提示</h2>
+              <p class="hint">点选卡片会在下方展示详情（与地图图钉一致）。</p>
+              <div class="guest-chips">
+                <button
+                  type="button"
+                  class="guest-chip"
+                  :class="{ active: selectedPublicEvent && selectedPublicEvent.id === pe.id }"
+                  v-for="pe in publicEvents"
+                  :key="pe.id"
+                  @click="selectedPublicEvent = pe; focusMapItem('public', pe.id)"
+                >
+                  <span class="guest-chip-type">{{ pe.type }}</span>
+                  <span class="guest-chip-title">{{ pe.title }}</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="card span-2 guest-detail-card" id="guest-detail" v-if="selectedPublicEvent">
+              <h2>事件详情</h2>
+              <p class="guest-detail-title">{{ selectedPublicEvent.title }}</p>
+              <p class="small">时间：{{ selectedPublicEvent.time }}</p>
+              <p class="small">大致区域：{{ selectedPublicEvent.area }}</p>
+              <p class="text-mono small">参考坐标：{{ selectedPublicEvent.lng.toFixed(4) }}, {{ selectedPublicEvent.lat.toFixed(4) }}（已模糊）</p>
+              <p>{{ selectedPublicEvent.tip }}</p>
+              <p class="risk-line">风险提示：请根据提示调整路线，注意现场秩序与交通安全。</p>
+              <button type="button" class="btn btn-ghost" @click="focusMapItem('public', selectedPublicEvent.id)">在地图上定位</button>
+            </section>
+            
+
+          </section>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
