@@ -1839,29 +1839,20 @@
 
         baseRadii.forEach((baseRadius, li) => {
           const vertices = [];
-          const sampleCount = 36;  // 36方向（每10度）
+          const sampleCount = 24;  // 24方向（每15度），提速33%
           const config = layerConfigs[li];
           const angleOffset = angleOffsets[li];
 
           for (let i = 0; i < sampleCount; i++) {
-            // 角度 + 层间偏移 + 微扰动（单方向只算一次）
-            const jitter = (this.hashCoord(event.lng + i * 0.001, event.lat) - 0.5) * 4;
-            const angleDeg = (360 / sampleCount) * i + angleOffset + jitter;
+            const angleDeg = (360 / sampleCount) * i + angleOffset;
             const angleRad = (angleDeg * Math.PI) / 180;
 
-            // 只用 baseRadius（ratio=1.0），不做多距离采样，避免同一层出现多个轮廓
             const sampleLng = event.lng + Math.cos(angleRad) * baseRadius;
             const sampleLat = event.lat + Math.sin(angleRad) * baseRadius;
 
-            // 地形噪声（3八度）
-            const terrain = this.multiOctaveNoise(sampleLng, sampleLat);
-            // 确定性"水系"检测
-            const waterNoise = this.hashCoord(sampleLng * 7, sampleLat * 7);
-            const waterFactor = waterNoise < 0.08 ? 0.3 : 1.0; // 8%概率遇到水域
-            // 建筑密度（基于噪声模拟）
-            const buildingFactor = 0.85 + this.hashCoord(sampleLng * 3, sampleLat * 3) * 0.3;
-
-            const adjustment = Math.max(0.2, Math.min(1.7, terrain * waterFactor * buildingFactor));
+            // 简化地形扰动：单次 hashCoord 替代 multiOctaveNoise + waterFactor + buildingFactor
+            const rawNoise = this.hashCoord(sampleLng * 11, sampleLat * 13);
+            const adjustment = 0.7 + rawNoise * 0.6; // 范围 0.4~1.3
             const effectiveDist = baseRadius * adjustment;
             vertices.push({
               lng: event.lng + Math.cos(angleRad) * effectiveDist,
@@ -1869,25 +1860,10 @@
             });
           }
 
-          // 轻度高斯平滑
-          const smoothed = this.gaussianSmooth1D(vertices.map(v => {
-            const dx = v.lng - event.lng;
-            const dy = v.lat - event.lat;
-            return Math.sqrt(dx * dx + dy * dy);
-          }), 1);
+          // 闭合路径
+          vertices.push({ ...vertices[0] });
 
-          const finalVertices = vertices.map((v, i) => {
-            const angle = Math.atan2(v.lat - event.lat, v.lng - event.lng);
-            return {
-              lng: event.lng + Math.cos(angle) * smoothed[i],
-              lat: event.lat + Math.sin(angle) * smoothed[i]
-            };
-          });
-
-          // 闭合
-          finalVertices.push({ ...finalVertices[0] });
-
-          const path = finalVertices.map(v => [v.lng, v.lat]);
+          const path = vertices.map(v => [v.lng, v.lat]);
           const polygon = new AMap.Polygon({
             path: path,
             strokeColor: config.strokeColor,
@@ -3237,21 +3213,6 @@
               //     "<p class=\"amap-iw-note\">可拖动调度参数后重新加载地图</p>"
               //   );
               // }
-              
-              // 显示动态围栏
-              if (this.dispatch.fenceVertices && this.dispatch.fenceVertices.length >= 3) {
-                const fencePath = this.dispatch.fenceVertices.map(v => [v.lng, v.lat]);
-                const polygon = new AMap.Polygon({
-                  path: fencePath,
-                  strokeColor: "#3b82f6",
-                  strokeWeight: 2,
-                  strokeOpacity: 0.8,
-                  fillColor: "#3b82f6",
-                  fillOpacity: 0.2
-                });
-                polygon.setMap(this.mapInstance);
-                this.mapMarkers.push(polygon);
-              }
               
               // 显示警力位置
               this.dispatch.units.forEach((unit, index) => {
