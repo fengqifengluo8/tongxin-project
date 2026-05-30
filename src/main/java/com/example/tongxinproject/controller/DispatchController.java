@@ -79,7 +79,7 @@ public class DispatchController {
         DispatchTask task = new DispatchTask();
         task.setIncidentLng(incidentLng);
         task.setIncidentLat(incidentLat);
-        task.setPoliceUnitId(bestUnit != null ? Long.valueOf(bestUnit.getUnitId().replaceAll("\\D", "")) : null);
+        task.setPoliceUnitId(parseUnitIdSafely(bestUnit));
         task.setDispatchResult(bestUnit != null ? "success" : "failed");
         task.setTaskStatus("assigned");
         task.setDistance(bestUnit != null ? bestDistance : null);
@@ -137,5 +137,21 @@ public class DispatchController {
             }
         }
         return bestUnit;
+    }
+
+    /**
+     * 安全解析 unitId 中的数字部分为 Long，解析失败返回 null（不抛异常）
+     */
+    private Long parseUnitIdSafely(DispatchRequest.PoliceUnitData unit) {
+        if (unit == null || unit.getUnitId() == null || unit.getUnitId().isBlank()) {
+            return null;
+        }
+        try {
+            String digits = unit.getUnitId().replaceAll("\\D", "");
+            if (digits.isEmpty()) return null;
+            return Long.valueOf(digits);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 }

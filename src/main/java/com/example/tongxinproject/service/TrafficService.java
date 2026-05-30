@@ -12,6 +12,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @Service
@@ -263,11 +264,30 @@ public class TrafficService {
         return result;
     }
 
+    private static final Map<String, double[]> CITY_BOUNDS = new LinkedHashMap<>();
+    static {
+        // 武汉及周边城市粗粒度包围盒（格式：{minLng, maxLng, minLat, maxLat}）
+        CITY_BOUNDS.put("420100", new double[]{113.68, 115.08, 29.97, 31.37}); // 武汉
+        CITY_BOUNDS.put("110000", new double[]{115.42, 117.50, 39.44, 41.06}); // 北京
+        CITY_BOUNDS.put("310000", new double[]{120.84, 122.00, 30.67, 31.53}); // 上海
+        CITY_BOUNDS.put("440100", new double[]{112.95, 114.05, 22.55, 23.93}); // 广州
+        CITY_BOUNDS.put("440300", new double[]{113.75, 114.62, 22.45, 22.86}); // 深圳
+        CITY_BOUNDS.put("510100", new double[]{103.01, 104.90, 30.08, 31.43}); // 成都
+        CITY_BOUNDS.put("500000", new double[]{105.29, 110.20, 28.17, 32.20}); // 重庆
+    }
+
     /**
-     * 获取城市编码（简化实现，返回固定城市）
+     * 基于坐标的粗粒度城市编码查找（包围盒法）
+     * 未命中时返回 "420100"（武汉），覆盖本项目主要使用场景
      */
     private String getCityCode(double lng, double lat) {
-        return "110000"; // 默认北京，实际应用中需要根据坐标获取城市编码
+        for (Map.Entry<String, double[]> entry : CITY_BOUNDS.entrySet()) {
+            double[] b = entry.getValue();
+            if (lng >= b[0] && lng <= b[1] && lat >= b[2] && lat <= b[3]) {
+                return entry.getKey();
+            }
+        }
+        return "420100"; // 默认武汉，覆盖本项目主场景
     }
 
     /**

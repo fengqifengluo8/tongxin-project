@@ -76,3 +76,40 @@ CREATE TABLE IF NOT EXISTS `public_event` (
     INDEX idx_create_time (`create_time`),
     INDEX idx_type (`type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 围栏表 (E-R 设计中缺失)
+CREATE TABLE IF NOT EXISTS `fence` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `fence_id` VARCHAR(100) NOT NULL UNIQUE COMMENT '围栏业务ID',
+    `center_lng` DOUBLE COMMENT '中心经度',
+    `center_lat` DOUBLE COMMENT '中心纬度',
+    `radius` DOUBLE COMMENT '围栏半径(km)',
+    `boundary_coords` TEXT COMMENT '边界坐标(JSON数组)',
+    `fence_type` VARCHAR(50) COMMENT '围栏类型: CORE/BUFFER/EXTENDED',
+    `status` VARCHAR(20) DEFAULT 'active' COMMENT '状态: active/inactive',
+    `incident_id` BIGINT COMMENT '关联警情ID',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_fence_id (`fence_id`),
+    INDEX idx_fence_type (`fence_type`),
+    INDEX idx_status (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 警务指令表 (E-R 设计中缺失)
+CREATE TABLE IF NOT EXISTS `command` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    `command_id` VARCHAR(100) NOT NULL UNIQUE COMMENT '指令业务ID',
+    `content` TEXT COMMENT '指令内容',
+    `command_type` VARCHAR(50) COMMENT '指令类型: 处置/巡逻/支援/待命',
+    `send_time` DATETIME COMMENT '发送时间',
+    `status` VARCHAR(20) DEFAULT 'sent' COMMENT '状态: sent/received/ack/executed',
+    `from_user_id` BIGINT COMMENT '发送者用户ID',
+    `to_user_id` BIGINT COMMENT '接收者用户ID',
+    `dispatch_task_id` BIGINT COMMENT '关联派警记录ID',
+    `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_command_id (`command_id`),
+    INDEX idx_command_type (`command_type`),
+    INDEX idx_status (`status`),
+    INDEX idx_to_user_id (`to_user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

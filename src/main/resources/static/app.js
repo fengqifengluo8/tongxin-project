@@ -282,18 +282,22 @@
             this.loadAmapScriptForRole(this.userRole);
           }
           if (this.isLoggedIn && this.userRole === "commander") {
-            // 只有在localStorage中没有数据时才加载默认事件
-            if (this.commanderEvents.length === 0) {
-              this.loadCommanderEvents();
-            }
+            // 始终刷新事件列表（覆盖旧localStorage数据）
+            this.loadCommanderEvents();
+            this.initCommanderDemoData();
+            // 自动连接WebSocket以便实时接收警员连接和下达指令
+            this.toggleWs();
           }
           // 公众端登录后加载公示事件
           if (this.isLoggedIn && this.userRole === "guest") {
             this.loadPublicEvents();
           }
-          // 警员登录后自动连接WebSocket
+          // 警员登录后自动连接WebSocket + 初始化演示数据
           if (this.isLoggedIn && this.userRole === "officer") {
             this.toggleWs();
+            this.initOfficerDemoData();
+            // 自动请求定位
+            this.requestOfficerLocation();
           }
         });
       },
@@ -314,6 +318,15 @@
             this.updateTransportMode();
           }
         },
+        // 警员任务变化时刷新地图路线
+        officerOrders: {
+          handler() {
+            if (this.mapLoaded && this.mapContext === 'officer') {
+              this.initMapForRole('officer');
+            }
+          },
+          deep: true
+        },
         eventFeedbacks(newFeedbacks) {
           localStorage.setItem('pcmp_event_feedbacks', JSON.stringify(newFeedbacks));
           // 重新计算服务评分
@@ -330,54 +343,54 @@
     methods: {
       loadCommanderEvents() {
         this.eventsLoading = true;
-        
-        // 保存当前的安全隐患事件
+
+        // 演示基线事件（始终显示，与警员端坐标系一致）
+        const baseLng = 114.305558, baseLat = 30.592759;
+        const demoEvents = [
+          { id: "E-1001", type: "交通事故", priority: "高", status: "待处理", region: "城东大道与解放路交叉口", lng: baseLng + 0.008, lat: baseLat + 0.005 },
+          { id: "E-1003", type: "求助", priority: "中", status: "待处理", region: "滨江小区3号楼", lng: baseLng + 0.004, lat: baseLat - 0.006 },
+        ];
+
+        // 保存安全隐患事件
         const safetyEvents = this.commanderEvents.filter(event => event.type === "安全隐患");
-        
+
         fetch("/api/commander/events")
-          .then(response => response.json())
+          .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            return response.json();
+          })
           .then(data => {
-            if (data.code === 200 && data.data) {
-              let events = data.data.map((event, index) => ({
+            if (data.code === 200 && data.data && data.data.length > 0) {
+              // API有数据时：以API数据为主，补充演示数据中API没有的事件
+              let apiEvents = data.data.map((event, index) => ({
                 id: event.id ? "E-" + String(event.id).padStart(4, "0") : "E-0000",
                 type: event.type || "未知类型",
                 priority: this.getPriorityLevel(event.type),
                 status: event.status || "待处理",
                 region: event.address || "未知区域",
-                // 如果事件有坐标就用真实坐标，否则用确定性偏移（基于索引而非随机）
-                lng: event.lng || (114.305558 + (index * 0.003 - 0.003)),
-                lat: event.lat || (30.592759 + (index * 0.002 - 0.002))
+                lng: event.lng || (baseLng + (index * 0.003)),
+                lat: event.lat || (baseLat + (index * 0.002))
               }));
-              // 过滤掉已完成的事件
+              const apiIds = new Set(apiEvents.map(e => e.id));
+              // 补充API中没有的演示事件
+              const extraDemos = demoEvents.filter(e => !apiIds.has(e.id));
+              let events = [...apiEvents, ...extraDemos];
+              // 过滤已完成
               events = events.filter(event => !this.completedEventIds.includes(event.id));
-              // 合并安全隐患事件，确保不重复
-              const existingEventIds = new Set(events.map(event => event.id));
-              const newSafetyEvents = safetyEvents.filter(event => !existingEventIds.has(event.id));
-              events = [...events, ...newSafetyEvents];
+              // 合并安全隐患
+              const existingIds = new Set(events.map(e => e.id));
+              events = [...events, ...safetyEvents.filter(e => !existingIds.has(e.id))];
               this.commanderEvents = events;
-              
-              // 刷新地图以显示新事件
-              if (this.mapLoaded && this.mapContext === "commander") {
-                this.initMapForRole("commander");
-              }
+            } else {
+              // API无数据：使用演示数据
+              this.applyDemoEvents(demoEvents, safetyEvents);
+            }
+            if (this.mapLoaded && this.mapContext === "commander") {
+              this.initMapForRole("commander");
             }
           })
           .catch(() => {
-            // 使用默认数据
-            let events = [
-              { id: "E-1042", type: "交通事故", priority: "高", status: "处置中", region: "城东片区", lng: 116.404, lat: 39.915 },
-              { id: "E-1043", type: "群体活动", priority: "中", status: "监控中", region: "文化广场", lng: 116.398, lat: 39.910 },
-              { id: "E-1044", type: "设施报修", priority: "低", status: "待分派", region: "地铁沿线", lng: 116.390, lat: 39.905 },
-            ];
-            // 过滤掉已完成的事件
-            events = events.filter(event => !this.completedEventIds.includes(event.id));
-            // 合并安全隐患事件，确保不重复
-            const existingEventIds = new Set(events.map(event => event.id));
-            const newSafetyEvents = safetyEvents.filter(event => !existingEventIds.has(event.id));
-            events = [...events, ...newSafetyEvents];
-            this.commanderEvents = events;
-            
-            // 刷新地图以显示新事件
+            this.applyDemoEvents(demoEvents, safetyEvents);
             if (this.mapLoaded && this.mapContext === "commander") {
               this.initMapForRole("commander");
             }
@@ -387,9 +400,19 @@
           });
       },
 
+      applyDemoEvents(demoEvents, safetyEvents) {
+        let events = demoEvents.filter(e => !this.completedEventIds.includes(e.id));
+        const existingIds = new Set(events.map(e => e.id));
+        events = [...events, ...(safetyEvents || []).filter(e => !existingIds.has(e.id))];
+        this.commanderEvents = events;
+      },
+
       loadPublicEvents() {
         fetch("/api/guest/public/event")
-          .then(response => response.json())
+          .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            return response.json();
+          })
           .then(data => {
             if (data.code === 200 && data.data) {
               this.publicEvents = data.data.map(event => ({
@@ -570,7 +593,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data)
         })
-        .then(response => response.json())
+        .then(response => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          return response.json();
+        })
         .then(data => {
           if (data.code === 200) {
             localStorage.setItem(
@@ -581,6 +607,14 @@
             this.isLoggedIn = true;
             this.authStage = "hub";
             document.body.style.overflow = "";
+            // 设置名称并初始化演示数据
+            if (this.pendingRole === 'officer') {
+              this.officerName = u;
+              this.officerId = 'U-' + u.toUpperCase().substring(0, 3);
+              this.$nextTick(() => { this.initOfficerDemoData(); });
+            } else if (this.pendingRole === 'commander') {
+              this.$nextTick(() => { this.initCommanderDemoData(); });
+            }
           } else {
             this.authError = data.msg || "操作失败";
           }
@@ -740,7 +774,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data)
         })
-        .then(response => response.json())
+        .then(response => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          return response.json();
+        })
         .then(data => {
           if (data.code === 200) {
             alert("事件已上报至指挥端待审核。\n类型：" + this.reportDraft.type + "\n优先级：" + this.reportDraft.priority + loc);
@@ -995,6 +1032,112 @@
         });
       },
       
+      // 警员端：自动请求浏览器定位
+      requestOfficerLocation() {
+        // 设置演示默认位置（武汉坐标），GPS成功后会覆盖
+        if (this.officerLng == null || this.officerLat == null) {
+          this.officerLng = 114.305558;
+          this.officerLat = 30.592759;
+        }
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            this.officerLng = +pos.coords.longitude.toFixed(6);
+            this.officerLat = +pos.coords.latitude.toFixed(6);
+            this.reverseGeocode(this.officerLng, this.officerLat, (addr) => {
+              this.officerAddress = addr || '';
+            });
+            // 刷新地图以显示位置和路线
+            if (this.mapLoaded && this.mapContext === 'officer') {
+              this.initMapForRole('officer');
+            }
+          },
+          () => { /* GPS失败，使用默认位置 */ },
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      },
+
+      // 指挥端：初始化演示数据（在线警员和警力列表）
+      initCommanderDemoData() {
+        const baseLng = 114.305558, baseLat = 30.592759;
+        // 演示在线警员（与dispatch.units同步）
+        if (this.connectedOfficers.length === 0) {
+          this.connectedOfficers = [
+            { sessionId: 'demo-s1', unitId: 'U-PT1', name: '张警官', status: '执勤中', transportMode: '开车', lng: baseLng + 0.005, lat: baseLat + 0.003 },
+            { sessionId: 'demo-s2', unitId: 'U-PT2', name: '李警官', status: '执勤中', transportMode: '骑行', lng: baseLng - 0.003, lat: baseLat + 0.006 },
+            { sessionId: 'demo-s3', unitId: 'U-JJ1', name: '王交警', status: '办案中', transportMode: '开车', lng: baseLng + 0.007, lat: baseLat - 0.004 },
+          ];
+        }
+        // 演示警力列表（调度用）
+        if (this.dispatch.units.length === 0) {
+          this.dispatch.units = this.connectedOfficers.map((o, i) => ({
+            unitId: o.unitId, name: o.name, available: true,
+            status: o.status, transportMode: o.transportMode || '步行',
+            policeType: o.unitId.includes('JJ') ? '交警' : '巡逻警',
+            lng: o.lng || (baseLng + (i * 0.001)),
+            lat: o.lat || (baseLat + (i * 0.001))
+          }));
+        }
+        // 默认围栏多边形：覆盖演示事件区域，确保调度算法能正确判定警员-事件位置关系
+        if (!this.dispatch.fenceVertices || this.dispatch.fenceVertices.length === 0) {
+          const dx = 0.015, dy = 0.012;
+          this.dispatch.fenceVertices = [
+            { lng: baseLng - dx, lat: baseLat - dy },
+            { lng: baseLng + dx, lat: baseLat - dy },
+            { lng: baseLng + dx, lat: baseLat + dy },
+            { lng: baseLng - dx, lat: baseLat + dy },
+          ];
+        }
+      },
+
+      // 警员端：初始化演示数据（任务/周边警情/可援助事件）
+      initOfficerDemoData() {
+        const baseLng = 114.305558;
+        const baseLat = 30.592759;
+
+        // 演示指挥任务（只有当前officerOrders为空时才填充，避免覆盖真实WebSocket指令）
+        if (this.officerOrders.length === 0) {
+          this.officerOrders = [
+            {
+              id: 'T-1001', eventId: 'E-1001', eventType: '交通事故',
+              title: '交通事故处置', place: '城东大道与解放路交叉口',
+              address: '城东大道与解放路交叉口',
+              priority: '高', deadline: '18:00',
+              detail: '两车相撞，无人员伤亡，请前往疏导交通',
+              lng: baseLng + 0.008, lat: baseLat + 0.005,
+              officerName: this.officerName, officerId: this.officerId
+            },
+            {
+              id: 'T-1003', eventId: 'E-1003', eventType: '求助',
+              title: '群众求助响应', place: '滨江小区3号楼',
+              address: '滨江小区3号楼',
+              priority: '中', deadline: '20:00',
+              detail: '老人走失求助，请协助寻找',
+              lng: baseLng + 0.004, lat: baseLat - 0.006,
+              officerName: this.officerName, officerId: this.officerId
+            }
+          ];
+        }
+
+        // 演示周边警情
+        if (this.nearbyIncidents.length === 0) {
+          this.nearbyIncidents = [
+            { id: 'N-001', type: '交通拥堵', brief: '环城南路车流量大', lng: baseLng + 0.006, lat: baseLat + 0.003 },
+            { id: 'N-002', type: '噪音投诉', brief: '商业街夜间施工噪音', lng: baseLng - 0.004, lat: baseLat + 0.007 },
+            { id: 'N-003', type: '设施损坏', brief: '中山路路灯损坏', lng: baseLng + 0.005, lat: baseLat - 0.004 },
+            { id: 'N-004', type: '人群聚集', brief: '市民广场大型活动', lng: baseLng - 0.007, lat: baseLat - 0.003 }
+          ];
+        }
+
+        // 演示可援助事件
+        if (this.volunteerIncidents.length === 0) {
+          this.volunteerIncidents = [
+            { id: 'V-001', type: '问路指引', brief: '游客询问火车站方向', lng: baseLng + 0.003, lat: baseLat - 0.005 },
+            { id: 'V-002', type: '纠纷调解', brief: '邻里停车纠纷待调解', lng: baseLng - 0.005, lat: baseLat + 0.002 }
+          ];
+        }
+      },
+
       // 地理编码：将文本地址转换为经纬度坐标
       geocode(address, cb) {
         if (typeof AMap === "undefined" || !address) {
@@ -1058,8 +1201,8 @@
       addFenceVertex() {
         const last = this.dispatch.fenceVertices[this.dispatch.fenceVertices.length - 1];
         this.dispatch.fenceVertices.push({
-          lng: last ? last.lng : 116.4,
-          lat: last ? last.lat : 39.91,
+          lng: last ? last.lng : this.dispatch.eventLng || 114.305558,
+          lat: last ? last.lat : this.dispatch.eventLat || 30.592759,
         });
       },
       autoGenerateFence() {
@@ -1584,11 +1727,14 @@
         return false;
       },
       resetFence() {
+        const cLng = this.dispatch.eventLng || 114.305558;
+        const cLat = this.dispatch.eventLat || 30.592759;
+        const dx = 0.015, dy = 0.012;
         this.dispatch.fenceVertices = [
-          { lng: 116.39, lat: 39.905 },
-          { lng: 116.405, lat: 39.905 },
-          { lng: 116.405, lat: 39.915 },
-          { lng: 116.39, lat: 39.915 },
+          { lng: cLng - dx, lat: cLat - dy },
+          { lng: cLng + dx, lat: cLat - dy },
+          { lng: cLng + dx, lat: cLat + dy },
+          { lng: cLng - dx, lat: cLat + dy },
         ];
       },
 
@@ -1599,6 +1745,7 @@
         try {
           const url = `/api/fence/dynamic-polygon?lng=${event.lng}&lat=${event.lat}`;
           const res = await fetch(url);
+          if (!res.ok) throw new Error(`围栏接口请求失败: HTTP ${res.status}`);
           const data = await res.json();
           
           // 地图已刷新，丢弃过时的回调
@@ -1676,47 +1823,73 @@
         }
       },
       
-      // 本地fallback围栏（API不可用时使用，同样生成三层）
+      // 本地fallback围栏（API不可用时使用，增强版地形感知算法）
       renderFallbackFence(event, index) {
-        // 地图已销毁，不渲染
         if (!this.mapInstance) return;
-        // 生成路网数据并构建三层围栏
-        const roadNetwork = this.generateRealisticRoadNetwork(event.lng, event.lat);
-        const filteredPoints = this.detectOutliers(roadNetwork, { lng: event.lng, lat: event.lat });
-        
-        // 三层时间阈值（分钟）
-        const layerTimes = [
-          { time: 5,  fillColor: '#ef4444', strokeColor: '#dc2626', fillOpacity: 0.45, strokeWidth: 3, name: '核心圈' },
-          { time: 12, fillColor: '#f59e0b', strokeColor: '#d97706', fillOpacity: 0.35, strokeWidth: 2, name: '缓冲圈' },
-          { time: 25, fillColor: '#3b82f6', strokeColor: '#2563eb', fillOpacity: 0.25, strokeWidth: 2, name: '扩展圈' }
+
+        // 各层基础半径（经纬度）
+        const baseRadii = [0.025, 0.07, 0.13]; // 核心圈~3km, 缓冲圈~8km, 扩展圈~15km
+        const layerConfigs = [
+          { fillColor: '#ef4444', strokeColor: '#dc2626', fillOpacity: 0.45, strokeWidth: 3, name: '核心圈' },
+          { fillColor: '#f59e0b', strokeColor: '#d97706', fillOpacity: 0.35, strokeWidth: 2, name: '缓冲圈' },
+          { fillColor: '#3b82f6', strokeColor: '#2563eb', fillOpacity: 0.25, strokeWidth: 2, name: '扩展圈' }
         ];
-        
-        layerTimes.forEach((config, li) => {
-          let fence = this.generateIsochrones(filteredPoints, { lng: event.lng, lat: event.lat }, config.time);
-          
-          if (!fence || fence.length < 3) {
-            // 默认正十二边形
-            const radius = 0.01 + li * 0.015;
-            fence = [];
-            for (let i = 0; i < 12; i++) {
-              const angle = (Math.PI * 2 * i) / 12;
-              fence.push({
-                lng: event.lng + Math.cos(angle) * radius,
-                lat: event.lat + Math.sin(angle) * radius
-              });
-            }
+        // 层间角度错开，避免同心圆
+        const angleOffsets = [0, 5, 2.5];
+
+        baseRadii.forEach((baseRadius, li) => {
+          const vertices = [];
+          const sampleCount = 36;  // 36方向（每10度）
+          const config = layerConfigs[li];
+          const angleOffset = angleOffsets[li];
+
+          for (let i = 0; i < sampleCount; i++) {
+            // 角度 + 层间偏移 + 微扰动（单方向只算一次）
+            const jitter = (this.hashCoord(event.lng + i * 0.001, event.lat) - 0.5) * 4;
+            const angleDeg = (360 / sampleCount) * i + angleOffset + jitter;
+            const angleRad = (angleDeg * Math.PI) / 180;
+
+            // 只用 baseRadius（ratio=1.0），不做多距离采样，避免同一层出现多个轮廓
+            const sampleLng = event.lng + Math.cos(angleRad) * baseRadius;
+            const sampleLat = event.lat + Math.sin(angleRad) * baseRadius;
+
+            // 地形噪声（3八度）
+            const terrain = this.multiOctaveNoise(sampleLng, sampleLat);
+            // 确定性"水系"检测
+            const waterNoise = this.hashCoord(sampleLng * 7, sampleLat * 7);
+            const waterFactor = waterNoise < 0.08 ? 0.3 : 1.0; // 8%概率遇到水域
+            // 建筑密度（基于噪声模拟）
+            const buildingFactor = 0.85 + this.hashCoord(sampleLng * 3, sampleLat * 3) * 0.3;
+
+            const adjustment = Math.max(0.2, Math.min(1.7, terrain * waterFactor * buildingFactor));
+            const effectiveDist = baseRadius * adjustment;
+            vertices.push({
+              lng: event.lng + Math.cos(angleRad) * effectiveDist,
+              lat: event.lat + Math.sin(angleRad) * effectiveDist
+            });
           }
-          
+
+          // 轻度高斯平滑
+          const smoothed = this.gaussianSmooth1D(vertices.map(v => {
+            const dx = v.lng - event.lng;
+            const dy = v.lat - event.lat;
+            return Math.sqrt(dx * dx + dy * dy);
+          }), 1);
+
+          const finalVertices = vertices.map((v, i) => {
+            const angle = Math.atan2(v.lat - event.lat, v.lng - event.lng);
+            return {
+              lng: event.lng + Math.cos(angle) * smoothed[i],
+              lat: event.lat + Math.sin(angle) * smoothed[i]
+            };
+          });
+
           // 闭合
-          const first = fence[0];
-          const last = fence[fence.length - 1];
-          if (first.lng !== last.lng || first.lat !== last.lat) {
-            fence.push({ ...first });
-          }
-          
-          const fencePath = fence.map(v => [v.lng, v.lat]);
+          finalVertices.push({ ...finalVertices[0] });
+
+          const path = finalVertices.map(v => [v.lng, v.lat]);
           const polygon = new AMap.Polygon({
-            path: fencePath,
+            path: path,
             strokeColor: config.strokeColor,
             strokeWeight: config.strokeWidth,
             strokeOpacity: 0.7,
@@ -1728,6 +1901,61 @@
           polygon.setMap(this.mapInstance);
           this.mapMarkers.push(polygon);
         });
+      },
+
+      // 多八度地形噪声（前端版，与后端算法保持一致）
+      multiOctaveNoise(lng, lat) {
+        let noise = 0;
+        let amp = 0.5, freq = 1.0;
+        for (let oct = 0; oct < 3; oct++) {
+          const nx = lng * freq * 800, ny = lat * freq * 1000;
+          noise += amp * this.simplex2D(nx, ny);
+          freq *= 2; amp *= 0.5;
+        }
+        return 0.6 + (noise + 0.8) / 1.6 * 0.9;
+      },
+
+      simplex2D(x, y) {
+        const ix = Math.floor(x), iy = Math.floor(y);
+        const fx = x - ix, fy = y - iy;
+        const sx = fx * fx * (3 - 2 * fx);
+        const sy = fy * fy * (3 - 2 * fy);
+        const hc = (a, b) => { let n = a * 15731 + b * 789221; n = (n ^ (n >>> 13)) * 0x5bd1e995; n = n ^ (n >>> 15); return (n & 0x7fffffff) / 0x7fffffff * 2 - 1; };
+        const n00 = hc(ix, iy), n10 = hc(ix + 1, iy), n01 = hc(ix, iy + 1), n11 = hc(ix + 1, iy + 1);
+        const nx0 = n00 + sx * (n10 - n00), nx1 = n01 + sx * (n11 - n01);
+        return nx0 + sy * (nx1 - nx0);
+      },
+
+      gaussianSmooth1D(data, sigma) {
+        const n = data.length;
+        if (n <= 2) return [...data];
+        const kr = Math.max(1, Math.floor(sigma * 3));
+        const kernel = [];
+        let ksum = 0;
+        for (let i = -kr; i <= kr; i++) {
+          const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+          kernel.push(v);
+          ksum += v;
+        }
+        for (let i = 0; i < kernel.length; i++) kernel[i] /= ksum;
+        return data.map((_, i) => {
+          let sum = 0;
+          for (let j = -kr; j <= kr; j++) {
+            const idx = (i + j + n) % n;
+            sum += data[idx] * kernel[j + kr];
+          }
+          return sum;
+        });
+      },
+
+      // 确定性哈希
+      hashCoord(lng, lat) {
+        const a = Math.round(lng * 10000);
+        const b = Math.round(lat * 10000);
+        let h = (a * 31 + b) | 0;
+        h = (h ^ (h >>> 16)) * 0x45d9f3b;
+        h = (h ^ (h >>> 16));
+        return (h & 0x7fffffff) / 0x7fffffff;
       },
 
       removeUnit(i) {
@@ -1852,7 +2080,7 @@
           try {
             const json = JSON.parse(data);
             if (json.type === "CONNECTION_REQUEST") {
-              // 指挥端接收到连接请求
+              // 指挥端接收到连接请求 → 自动接受
               if (this.userRole === "commander") {
                 console.log('Received CONNECTION_REQUEST:', json);
                 this.connectionRequests.push({
@@ -1861,7 +2089,9 @@
                   unitId: json.unitId,
                   name: json.name
                 });
-                console.log('Updated connectionRequests:', this.connectionRequests);
+                // 自动接受连接请求
+                this.handleConnectionRequest(json.sessionId, true, '自动接受');
+                console.log('Auto-accepted connection request from:', json.name);
               }
             } else if (json.type === "CONNECT_RESPONSE") {
               // 警务端接收到连接响应
@@ -2054,24 +2284,65 @@
               if (this.userRole === "officer") {
                 const order = json.order;
                 if (order) {
-                  this.officerOrders.push(order);
-                  this.pushWsLog('in', '收到指挥中心指令: ' + order.title);
-                  // 如果地图已加载，重新初始化地图以显示新的红点
-                  if (this.mapLoaded && this.mapContext === "officer") {
-                    this.initMapForRole("officer");
+                  // 避免重复添加相同ID的指令
+                  if (!this.officerOrders.some(o => o.id === order.id)) {
+                    this.officerOrders.push(order);
+                    this.pushWsLog('in', '收到指挥中心指令: ' + order.title);
+                    // 如果地图已加载，重新初始化地图以显示新的红点
+                    if (this.mapLoaded && this.mapContext === "officer") {
+                      this.initMapForRole("officer");
+                    }
+
+                    // 显示路线规划弹窗
+                    if (this.officerLng && this.officerLat) {
+                      this.showRoutePlan(order.title, order.address || order.place, order.lng, order.lat);
+                    } else {
+                      alert("请先获取当前位置，以便规划路线");
+                    }
                   }
-                  
-                  // 显示路线规划弹窗
-                  if (this.officerLng && this.officerLat) {
-                    this.showRoutePlan(order.title, order.address || order.place, order.lng, order.lat);
-                  } else {
-                    alert("请先获取当前位置，以便规划路线");
+                }
+              }
+            } else if (json.type === "COMMAND_ACK") {
+              // 指挥端接收到指令发送确认
+              if (this.userRole === "commander") {
+                const eventId = json.eventId;
+                const delivered = json.delivered;
+                if (eventId) {
+                  const ev = this.commanderEvents.find(e => e.id === eventId);
+                  if (ev) {
+                    ev.status = '已指派';
+                    ev.assignedOrderId = json.orderId;
+                    this.pushWsLog('in', '指令' + json.orderId + ' ' + (delivered ? '已送达' : '未送达：' + json.message));
+                    // 刷新地图
+                    if (this.mapLoaded && this.mapContext === 'commander') {
+                      this.$nextTick(() => { this.initMapForRole('commander'); });
+                    }
+                  }
+                }
+              }
+            } else if (json.type === "EVENT_STATUS_UPDATE") {
+              // 指挥端接收到事件状态更新广播
+              if (this.userRole === "commander") {
+                const eventId = json.eventId;
+                const newStatus = json.status;
+                const officerName = json.officerName;
+                if (eventId && newStatus) {
+                  const ev = this.commanderEvents.find(e => e.id === eventId);
+                  if (ev) {
+                    ev.status = newStatus;
+                    if (officerName) ev.assignedOfficer = officerName;
+                    if (json.orderId) ev.assignedOrderId = json.orderId;
+                    this.pushWsLog('in', '事件 ' + eventId + ' 状态更新为: ' + newStatus + (officerName ? ' (指派给: ' + officerName + ')' : ''));
+                    // 刷新地图
+                    if (this.mapLoaded && this.mapContext === 'commander') {
+                      this.$nextTick(() => { this.initMapForRole('commander'); });
+                    }
                   }
                 }
               }
             }
           } catch (e) {
-            // 忽略解析错误
+            console.warn('[ws.onmessage] 消息解析失败:', e.message, '原始数据:', event.data.substring(0, 200));
           }
         };
       },
@@ -2128,35 +2399,35 @@
         // 创建遮罩
         const overlay = document.createElement('div');
         overlay.id = 'route-overlay';
-        overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:9999;';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;backdrop-filter:blur(4px);';
         overlay.onclick = () => {
           document.body.removeChild(document.getElementById('route-modal'));
           document.body.removeChild(overlay);
         };
         document.body.appendChild(overlay);
-        
+
         // 创建弹窗
         const modal = document.createElement('div');
         modal.id = 'route-modal';
-        modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:85%;max-width:900px;height:650px;background:white;border-radius:10px;box-shadow:0 4px 30px rgba(0,0,0,0.3);z-index:10000;padding:20px;display:flex;flex-direction:column;';
-        
+        modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:85%;max-width:900px;height:650px;background:#071026;border:1px solid rgba(0,238,255,0.2);border-radius:8px;box-shadow:0 4px 40px rgba(0,0,0,0.6),0 0 20px rgba(0,238,255,0.05);z-index:10000;padding:20px;display:flex;flex-direction:column;';
+
         // 标题栏
         const header = document.createElement('div');
-        header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;';
+        header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid rgba(0,238,255,0.1);';
         header.innerHTML = `
           <div>
-            <h3 style="margin:0;font-size:16px;color:#1e293b;">任务路线规划: ${taskTitle}</h3>
-            <p style="margin:4px 0 0;font-size:13px;color:#64748b;">任务地点: ${taskAddress || '未知'}</p>
+            <h3 style="margin:0;font-size:16px;color:#e0f0ff;">任务路线规划: ${taskTitle}</h3>
+            <p style="margin:4px 0 0;font-size:13px;color:#8899bb;">任务地点: ${taskAddress || '未知'}</p>
           </div>
-          <button id="route-close-btn-${uid}" style="padding:6px 14px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">关闭</button>
+          <button id="route-close-btn-${uid}" style="padding:6px 16px;background:rgba(0,238,255,0.1);color:#0ef;border:1px solid rgba(0,238,255,0.3);border-radius:4px;cursor:pointer;font-size:13px;transition:all 0.2s;">关闭</button>
         `;
         modal.appendChild(header);
         
         // 路线信息面板（预创建）
         const infoPanel = document.createElement('div');
         infoPanel.id = `route-info-${uid}`;
-        infoPanel.style.cssText = 'padding:12px;background:#f8fafc;border-radius:6px;margin-bottom:12px;font-size:14px;color:#333;min-height:48px;display:flex;align-items:center;';
-        infoPanel.innerHTML = '<div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:16px;height:16px;border:2px solid #3b82f6;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></span><span style="color:#64748b;">正在基于实时路况计算最优路线...</span></div>';
+        infoPanel.style.cssText = 'padding:12px 16px;background:rgba(0,238,255,0.05);border:1px solid rgba(0,238,255,0.1);border-radius:4px;margin-bottom:12px;font-size:14px;color:#c8d8f0;min-height:48px;display:flex;align-items:center;';
+        infoPanel.innerHTML = '<div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:16px;height:16px;border:2px solid #0ef;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;"></span><span style="color:#8899bb;">正在基于实时路况计算最优路线...</span></div>';
         modal.appendChild(infoPanel);
         
         // 路线图容器
@@ -2184,7 +2455,7 @@
       initRouteMap(taskLng, taskLat, uid) {
         if (!this.amapKey || !this.amapSec) {
           const infoPanel = document.getElementById(`route-info-${uid}`);
-          if (infoPanel) infoPanel.innerHTML = '<p style="margin:0;color:#ef4444;">请先配置高德地图API密钥</p>';
+          if (infoPanel) infoPanel.innerHTML = '<p style="margin:0;color:#f55;">请先配置高德地图API密钥</p>';
           return;
         }
         
@@ -2200,7 +2471,7 @@
           
           // 如果没有警员位置，无法规划路线
           if (myLng == null || myLat == null) {
-            if (infoPanel) infoPanel.innerHTML = '<p style="margin:0;color:#ef4444;">请先获取当前位置（点击"获取位置"按钮）</p>';
+            if (infoPanel) infoPanel.innerHTML = '<p style="margin:0;color:#f55;">请先获取当前位置（点击"获取位置"按钮）</p>';
             return;
           }
           
@@ -2254,8 +2525,10 @@
               (status, result) => {
                 if (status === 'complete' && result.routes && result.routes.length > 0) {
                   const route = result.routes[0];
-                  const distance = (route.distance / 1000).toFixed(2); // km
-                  const durationMin = Math.round(route.duration / 60); // 分钟
+                  const rawDist = Number(route.distance ?? 0);
+                  const distance = (isFinite(rawDist) ? rawDist / 1000 : 0).toFixed(2); // km
+                  const rawDur = Number(route.duration ?? route.time ?? route.totalTime ?? route.cost?.duration ?? 0);
+                  const durationMin = (isFinite(rawDur) && rawDur > 0) ? Math.round(rawDur / 60) : 0; // 分钟
                   
                   // 从steps中聚合路况信息
                   let congestionDistance = 0;
@@ -2301,29 +2574,29 @@
                   if (infoPanel) {
                     infoPanel.innerHTML = `
                       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;width:100%;">
-                        <div style="background:#eff6ff;padding:8px 14px;border-radius:6px;border-left:3px solid #3b82f6;flex-shrink:0;">
-                          <span style="color:#64748b;font-size:12px;">路线距离</span>
-                          <strong style="font-size:20px;color:#1e40af;margin-left:4px;">${distance}</strong>
-                          <span style="color:#64748b;font-size:12px;">km</span>
+                        <div style="background:rgba(0,150,255,0.08);padding:8px 14px;border-radius:4px;border-left:3px solid #0af;flex-shrink:0;">
+                          <span style="color:#7a8fa0;font-size:12px;">路线距离</span>
+                          <strong style="font-size:20px;color:#6cf;margin-left:4px;">${distance}</strong>
+                          <span style="color:#7a8fa0;font-size:12px;">km</span>
                         </div>
-                        <div style="background:#fef3c7;padding:8px 14px;border-radius:6px;border-left:3px solid #f59e0b;flex-shrink:0;">
-                          <span style="color:#64748b;font-size:12px;">预估时间</span>
-                          <strong style="font-size:20px;color:#b45309;margin-left:4px;">${durationMin}</strong>
-                          <span style="color:#64748b;font-size:12px;">分钟</span>
+                        <div style="background:rgba(255,170,0,0.08);padding:8px 14px;border-radius:4px;border-left:3px solid #fa0;flex-shrink:0;">
+                          <span style="color:#7a8fa0;font-size:12px;">预估时间</span>
+                          <strong style="font-size:20px;color:#fc0;margin-left:4px;">${durationMin}</strong>
+                          <span style="color:#7a8fa0;font-size:12px;">分钟</span>
                         </div>
-                        <div style="background:#fef2f2;padding:8px 14px;border-radius:6px;border-left:3px solid #ef4444;flex-shrink:0;">
-                          <span style="color:#64748b;font-size:12px;">预计到达</span>
-                          <strong style="font-size:18px;color:#dc2626;margin-left:4px;">${etaStr}</strong>
+                        <div style="background:rgba(255,80,80,0.08);padding:8px 14px;border-radius:4px;border-left:3px solid #f55;flex-shrink:0;">
+                          <span style="color:#7a8fa0;font-size:12px;">预计到达</span>
+                          <strong style="font-size:18px;color:#f77;margin-left:4px;">${etaStr}</strong>
                         </div>
-                        <div style="padding:8px 14px;border-radius:6px;border-left:3px solid ${trafficColor};background:#f0fdf4;flex-shrink:0;">
-                          <span style="color:#64748b;font-size:12px;">实时路况</span>
+                        <div style="padding:8px 14px;border-radius:4px;border-left:3px solid ${trafficColor};background:rgba(0,255,136,0.05);flex-shrink:0;">
+                          <span style="color:#7a8fa0;font-size:12px;">实时路况</span>
                           <strong style="font-size:16px;color:${trafficColor};margin-left:4px;">${overallTraffic}</strong>
                         </div>
                         ${trafficLightCount > 0 ? `
-                        <div style="background:#faf5ff;padding:8px 14px;border-radius:6px;border-left:3px solid #a855f7;flex-shrink:0;">
-                          <span style="color:#64748b;font-size:12px;">红绿灯</span>
-                          <strong style="font-size:16px;color:#7c3aed;margin-left:4px;">${trafficLightCount}</strong>
-                          <span style="color:#64748b;font-size:12px;">个</span>
+                        <div style="background:rgba(160,100,255,0.08);padding:8px 14px;border-radius:4px;border-left:3px solid #a8f;flex-shrink:0;">
+                          <span style="color:#7a8fa0;font-size:12px;">红绿灯</span>
+                          <strong style="font-size:16px;color:#c8f;margin-left:4px;">${trafficLightCount}</strong>
+                          <span style="color:#7a8fa0;font-size:12px;">个</span>
                         </div>` : ''}
                       </div>
                     `;
@@ -2333,19 +2606,19 @@
                 } else {
                   console.error('路线规划失败', result);
                   if (infoPanel) {
-                    infoPanel.innerHTML = '<p style="margin:0;color:#ef4444;">路线规划失败，可能原因：API密钥未配置、网络异常或位置信息无效</p>';
+                    infoPanel.innerHTML = '<p style="margin:0;color:#f55;">路线规划失败，可能原因：API密钥未配置、网络异常或位置信息无效</p>';
                   }
-                  
+
                   // Fallback: 使用直线距离估算
                   const dx = (taskLng - myLng) * 111000 * Math.cos(myLat * Math.PI / 180);
                   const dy = (taskLat - myLat) * 111000;
                   const straightDist = Math.sqrt(dx * dx + dy * dy) / 1000;
                   const estTime = Math.round(straightDist / 30 * 60); // 假设30km/h
-                  
+
                   if (infoPanel && straightDist > 0) {
                     infoPanel.innerHTML += `
-                      <div style="margin-top:8px;padding:8px;background:#fff3cd;border-radius:4px;font-size:12px;">
-                        <strong>估算参考:</strong> 直线距离约 ${straightDist.toFixed(1)}km，预估 ${estTime} 分钟（不含路况）
+                      <div style="margin-top:8px;padding:8px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:4px;font-size:12px;">
+                        <strong style="color:#fc0;">估算参考:</strong> <span style="color:#aab8c8;">直线距离约 ${straightDist.toFixed(1)}km，预估 ${estTime} 分钟（不含路况）</span>
                       </div>
                     `;
                   }
@@ -2420,13 +2693,26 @@
           alert('WebSocket未连接，请先连接');
           return;
         }
-        if (!this.currentChatTarget) {
-          alert('请先选择要下达指令的警员');
-          return;
+
+        // 自动选择目标警员：优先使用当前对话目标，否则选第一个空闲警员
+        let targetOfficer = this.currentChatTarget;
+        if (!targetOfficer) {
+          // 优先选执勤中的警员
+          targetOfficer = this.connectedOfficers.find(o => o.status === '执勤中');
+          if (!targetOfficer) {
+            targetOfficer = this.connectedOfficers[0];
+          }
+          if (!targetOfficer) {
+            alert('没有可用的在线警员，请等待警员连接');
+            return;
+          }
+          // 自动设置为当前对话目标，方便后续沟通
+          this.currentChatTarget = targetOfficer;
         }
-        
+
+        const orderId = 'T-' + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
         const order = {
-          id: 'T-' + Math.floor(Math.random() * 10000).toString().padStart(4, '0'),
+          id: orderId,
           eventId: event.id,
           eventType: event.type,
           title: event.type + '处置',
@@ -2437,20 +2723,29 @@
           detail: '请前往处理' + event.type + '事件',
           lng: event.lng,
           lat: event.lat,
-          officerName: this.currentChatTarget.name,
-          officerId: this.currentChatTarget.unitId
+          officerName: targetOfficer.name,
+          officerId: targetOfficer.unitId
         };
-        
+
         const env = {
           type: 'COMMAND',
-          targetSessionId: this.currentChatTarget.sessionId,
+          targetSessionId: targetOfficer.sessionId,
           order: order
         };
-        
+
         const raw = JSON.stringify(env);
         this.ws.send(raw);
-        this.pushWsLog('out', '已向' + this.currentChatTarget.name + '下达指令');
-        alert('指令已下达');
+        this.pushWsLog('out', '已向' + targetOfficer.name + '下达指令：' + event.type + '处置');
+
+        // 立即更新事件状态为"已指派"
+        event.status = '已指派';
+        event.assignedOfficer = targetOfficer.name;
+        event.assignedOrderId = orderId;
+
+        // 如果地图已加载，刷新地图标记
+        if (this.mapLoaded && this.mapContext === 'commander') {
+          this.$nextTick(() => { this.initMapForRole('commander'); });
+        }
       },
 
       autoAssignEvents() {
@@ -2458,55 +2753,59 @@
           alert('WebSocket未连接，请先连接');
           return;
         }
-        
-        // 先执行计算调度，更新调度结果
-        this.runDispatch();
-        
+
         // 筛选空闲警员（执勤中状态）
         const availableOfficers = this.connectedOfficers.filter(officer => officer.status === '执勤中');
         if (availableOfficers.length === 0) {
-          alert('没有可用的空闲警员');
+          alert('没有可用的空闲警员，请等待警员连接并设为执勤中状态');
           return;
         }
-        
-        // 将警员信息转换为警力单位格式，用于距离计算
-        const units = availableOfficers.map((officer, index) => ({
+
+        // 将警员信息转换为警力单位格式，用于距离计算（使用真实位置）
+        const units = availableOfficers.map(officer => ({
           unitId: officer.unitId,
           name: officer.name,
           available: true,
           status: officer.status,
           transportMode: officer.transportMode || '步行',
-          lng: 114.305558 + (index * 0.001),
-          lat: 30.592759 + (index * 0.001),
+          lng: officer.lng || 114.305558,
+          lat: officer.lat || 30.592759,
           sessionId: officer.sessionId
         }));
-        
-        // 为每个未分配的事件找到最近的警力
+
+        // 为每个待处理的事件找到最近的警力
+        // 若无有效围栏（<3个顶点），传递空数组让算法自动回退到全量警员匹配
+        const effectiveFence = (this.dispatch.fenceVertices && this.dispatch.fenceVertices.length >= 3)
+          ? this.dispatch.fenceVertices : [];
+
         let assignedCount = 0;
-        const assignedEventIds = [];
-        this.commanderEvents.forEach(event => {
-          if (event.status === 'pending') {
+        let pendingCount = 0;
+        for (const event of this.commanderEvents) {
+          // 修复：兼容"pending"和"待处理"两种状态
+          if (event.status === 'pending' || event.status === '待处理') {
+            pendingCount++;
             // 使用事件真实坐标作为事发点
             const incident = {
               lng: event.lng,
               lat: event.lat
             };
-            
+
             // 使用围栏算法计算最近警力
             const nearestDispatch = this.computeNearestDispatch({
               incident: incident,
-              fence: this.dispatch.fenceVertices,
+              fence: effectiveFence,
               units: units
             });
-            
+
             if (nearestDispatch && nearestDispatch.selectedUnit) {
               // 找到对应的警员
               const selectedUnit = nearestDispatch.selectedUnit;
               const officer = units.find(u => u.unitId === selectedUnit.unitId);
-              
+
               if (officer) {
+                const orderId = 'T-' + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
                 const order = {
-                  id: 'T-' + Math.floor(Math.random() * 10000).toString().padStart(4, '0'),
+                  id: orderId,
                   eventId: event.id,
                   eventType: event.type,
                   title: event.type + '处置',
@@ -2520,16 +2819,21 @@
                   officerName: officer.name,
                   officerId: officer.unitId
                 };
-                
+
                 const env = {
                   type: 'COMMAND',
                   targetSessionId: officer.sessionId,
                   order: order
                 };
-                
+
                 const raw = JSON.stringify(env);
-                this.ws.send(raw);
-                
+                if (this.canSendWs) {
+                  this.ws.send(raw);
+                } else {
+                  console.warn('[autoAssign] WebSocket 已断开，跳过后台指令发送');
+                  break;
+                }
+
                 let dispatchInfo = `已自动向${officer.name}下达指令：${event.type}处置`;
                 if (nearestDispatch.distanceApprox) {
                   dispatchInfo += ` (距离：${nearestDispatch.distanceApprox.toFixed(2)}公里`;
@@ -2539,22 +2843,34 @@
                   dispatchInfo += `)`;
                 }
                 this.pushWsLog('out', dispatchInfo);
+
+                // 立即更新事件状态为"已指派"
+                event.status = '已指派';
+                event.assignedOfficer = officer.name;
+                event.assignedOrderId = orderId;
+
                 assignedCount++;
-                assignedEventIds.push(event.id);
               }
             }
           }
-        });
-        
+        }
+
         if (assignedCount > 0) {
           alert(`已自动分配${assignedCount}个事件给空闲警员`);
-          
+
           // 重新加载地图以显示最新状态
           if (this.mapLoaded && this.mapContext === "commander") {
             this.initMapForRole("commander");
           }
         } else {
-          alert('没有待分配的事件');
+          const total = this.commanderEvents.length;
+          if (total === 0) {
+            alert('当前无任何事件，请先加载或创建事件');
+          } else if (pendingCount === 0) {
+            alert(`当前${total}个事件均非待处理状态（可能已全部指派或完成）`);
+          } else {
+            alert(`有${pendingCount}个待处理事件，但无法找到合适的警员（可能是围栏范围不覆盖或警员不可用）`);
+          }
         }
       },
 
@@ -2843,26 +3159,19 @@
               dragEnable: true,
               zoomEnable: true,
               touchZoom: true,
+              features: ['bg', 'road', 'building', 'point'],
+              layers: [
+                new AMap.TileLayer.RoadNet({ opacity: 0.6 }),
+                new AMap.TileLayer.Traffic({ autoRefresh: true, interval: 180, opacity: 0.5 })
+              ]
             });
             
-            // 注入自定义缩放和全屏按钮（延迟执行，等AMap DOM完全就绪）
+            // 注入自定义缩放、全屏和刷新按钮（延迟执行，等AMap DOM完全就绪）
             const gen = this.mapGeneration;
             setTimeout(() => {
               if (this.mapGeneration !== gen) return; // 地图已被重建，放弃
               this.injectMapControls(elId);
             }, 200);
-
-            // 添加地图点击事件，点击地图时自动填充事发点坐标
-            if (role === "commander") {
-              this.mapInstance.on('click', (e) => {
-                const lng = e.lnglat.getLng();
-                const lat = e.lnglat.getLat();
-                this.dispatch.incidentLng = lng;
-                this.dispatch.incidentLat = lat;
-                // 刷新地图以显示新的事发参考点
-                this.initMapForRole("commander");
-              });
-            }
             const iw = new AMap.InfoWindow({
               offset: new AMap.Pixel(0, -36),
               anchor: "bottom-center",
@@ -2918,16 +3227,16 @@
                 }
               });
               
-              // 只在有事发点坐标时添加参考点标记
-              if (this.dispatch.incidentLng && this.dispatch.incidentLat) {
-                addM(
-                  this.dispatch.incidentLng,
-                  this.dispatch.incidentLat,
-                  "事发参考点",
-                  "#f97316",
-                  "<p class=\"amap-iw-note\">可拖动调度参数后重新加载地图</p>"
-                );
-              }
+              // 只在有事发点坐标时添加参考点标记（学习中，暂时注释）
+              // if (this.dispatch.incidentLng && this.dispatch.incidentLat) {
+              //   addM(
+              //     this.dispatch.incidentLng,
+              //     this.dispatch.incidentLat,
+              //     "事发参考点",
+              //     "#f97316",
+              //     "<p class=\"amap-iw-note\">可拖动调度参数后重新加载地图</p>"
+              //   );
+              // }
               
               // 显示动态围栏
               if (this.dispatch.fenceVertices && this.dispatch.fenceVertices.length >= 3) {
@@ -2968,6 +3277,10 @@
               });
               if (this.officerLng != null && this.officerLat != null) {
                 addM(this.officerLng, this.officerLat, "我的位置", "#22c55e", "<p class=\"amap-iw-note\">执勤定位</p>");
+                // 为每个指挥任务规划并显示路线
+                if (this.officerOrders.length > 0) {
+                  this.renderOfficerRoutes();
+                }
               }
             } else if (role === "guest") {
               this.publicEvents.forEach((p) => {
@@ -3004,6 +3317,155 @@
         }
       },
 
+      // 警员端：在地图上渲染到各任务点的路线
+      renderOfficerRoutes() {
+        if (!this.mapInstance || !this.officerLng || !this.officerLat) return;
+        if (this.officerOrders.length === 0) return;
+
+        const myPos = [this.officerLng, this.officerLat];
+        const colors = ['#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#10b981'];
+
+        // 先用直线预估（fallback始终显示）
+        this.officerOrders.forEach((order, i) => {
+          if (!order.lng || !order.lat) return;
+          const color = colors[i % colors.length];
+          const distKm = this.haversineKm(this.officerLat, this.officerLng, order.lat, order.lng);
+          const safeDist = (distKm != null && isFinite(distKm)) ? distKm : 0;
+          const estMin = Math.round(safeDist / 30 * 60); // 假设30km/h城市道路
+
+          // 绘制虚线预估路线（底层）
+          const dashLine = new AMap.Polyline({
+            path: [myPos, [order.lng, order.lat]],
+            strokeColor: color,
+            strokeWeight: 2,
+            strokeOpacity: 0.35,
+            strokeStyle: 'dashed',
+            strokeDasharray: [8, 6],
+            zIndex: 45
+          });
+          dashLine.setMap(this.mapInstance);
+          this.mapMarkers.push(dashLine);
+
+          // 中点标签
+          const midLng = (this.officerLng + order.lng) / 2;
+          const midLat = (this.officerLat + order.lat) / 2;
+          const label = new AMap.Text({
+            position: [midLng, midLat],
+            text: `~${safeDist.toFixed(1)}km ${estMin}min`,
+            style: {
+              'background-color': color,
+              'color': '#fff',
+              'font-size': '11px',
+              'padding': '3px 8px',
+              'border-radius': '4px',
+              'border': '1px solid rgba(255,255,255,0.3)',
+              'box-shadow': '0 2px 6px rgba(0,0,0,0.3)'
+            },
+            offset: new AMap.Pixel(-30, -12),
+            zIndex: 55
+          });
+          label.setMap(this.mapInstance);
+          this.mapMarkers.push(label);
+        });
+
+        // 尝试用高德Driving API规划精确路线
+        AMap.plugin(['AMap.Driving'], () => {
+          this.officerOrders.forEach((order, i) => {
+            if (!order.lng || !order.lat) return;
+            const color = colors[i % colors.length];
+
+            const driving = new AMap.Driving({
+              map: null,
+              policy: AMap.DrivingPolicy.LEAST_TIME
+            });
+
+            driving.search(
+              new AMap.LngLat(this.officerLng, this.officerLat),
+              new AMap.LngLat(order.lng, order.lat),
+              { extensions: 'all' },
+              (status, result) => {
+                if (status === 'complete' && result.routes && result.routes[0]) {
+                  const route = result.routes[0];
+                  console.log('[Driving route keys]', Object.keys(route), 'duration=', route.duration, 'time=', route.time, 'cost=', route.cost);
+
+                  // 安全获取距离（米→公里）
+                  const rawDist = Number(route.distance ?? 0);
+                  const distKm = (isFinite(rawDist) ? rawDist / 1000 : 0).toFixed(2);
+
+                  // 安全获取时长：尝试所有可能的字段名，兼容不同API版本
+                  const rawDur = Number(
+                    route.duration ?? route.time ?? route.totalTime
+                    ?? route.cost?.duration ?? route.summary?.duration
+                    ?? route.cost?.time ?? 0
+                  );
+                  const durMin = (isFinite(rawDur) && rawDur > 0) ? Math.round(rawDur / 60) : null;
+
+                  const steps = route.steps || [];
+                  const routePath = [];
+                  steps.forEach(step => {
+                    if (step.path) step.path.forEach(p => routePath.push([p.lng, p.lat]));
+                  });
+
+                  if (routePath.length > 0) {
+                    // 实线覆盖虚线预估
+                    const polyline = new AMap.Polyline({
+                      path: routePath,
+                      strokeColor: color,
+                      strokeWeight: 5,
+                      strokeOpacity: 0.85,
+                      strokeStyle: 'solid',
+                      lineJoin: 'round',
+                      lineCap: 'round',
+                      zIndex: 50,
+                      showDir: true
+                    });
+                    polyline.setMap(this.mapInstance);
+                    this.mapMarkers.push(polyline);
+
+                    // 构建安全标签文本
+                    const distText = (isFinite(rawDist) && rawDist > 0) ? distKm + 'km' : '';
+                    const durText = durMin != null ? durMin + '分钟' : '--';
+                    const labelText = [distText, durText].filter(Boolean).join(' ');
+
+                    // 更新中点的精确标签
+                    const midIdx = Math.floor(routePath.length / 2);
+                    if (routePath[midIdx]) {
+                      const preciseLabel = new AMap.Text({
+                        position: routePath[midIdx],
+                        text: labelText,
+                        style: {
+                          'background-color': color,
+                          'color': '#fff',
+                          'font-size': '12px',
+                          'font-weight': '600',
+                          'padding': '4px 10px',
+                          'border-radius': '4px',
+                          'border': '2px solid rgba(255,255,255,0.5)',
+                          'box-shadow': '0 2px 8px rgba(0,0,0,0.4)'
+                        },
+                        offset: new AMap.Pixel(-35, -20),
+                        zIndex: 56
+                      });
+                      preciseLabel.setMap(this.mapInstance);
+                      this.mapMarkers.push(preciseLabel);
+                    }
+                  }
+                }
+              }
+            );
+          });
+        });
+      },
+
+      // Haversine 距离计算（公里）
+      haversineKm(lat1, lng1, lat2, lng2) {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      },
+
       destroyMap() {
         this.clearMapOverlays();
         if (this.mapInstance) {
@@ -3038,6 +3500,7 @@
           <button class="mc-btn" title="放大" data-action="zoomin">+</button>
           <button class="mc-btn" title="缩小" data-action="zoomout">−</button>
           <button class="mc-btn mc-btn--full" title="全屏" data-action="fullscreen">⛶</button>
+          <button class="mc-btn mc-btn--refresh" title="刷新地图" data-action="refresh">↻</button>
         `;
         shell.appendChild(ctrl);
 
@@ -3054,9 +3517,16 @@
             this.mapInstance.setZoom(Math.max(z - 1, 3));
           } else if (action === "fullscreen") {
             this.toggleMapFullscreen(elId);
+          } else if (action === "refresh") {
+            this.initMapForRole(this.mapContext);
           }
         });
 
+        // 移除旧的全屏监听器（避免重复绑定）
+        if (shell._fsHandler) {
+          shell.removeEventListener("fullscreenchange", shell._fsHandler);
+          shell.removeEventListener("webkitfullscreenchange", shell._fsHandler);
+        }
         // 监听全屏变化来更新按钮图标 + 重绘地图
         const onFsChange = () => {
           const btn = ctrl.querySelector("[data-action='fullscreen']");
@@ -3064,13 +3534,15 @@
             btn.textContent = document.fullscreenElement ? "✕" : "⛶";
             btn.title = document.fullscreenElement ? "退出全屏" : "全屏";
           }
-          // 延迟调 resize，等 CSS 过渡/DOM 更新完成
-          setTimeout(() => {
-            if (this.mapInstance) {
-              this.mapInstance.resize();
-            }
-          }, 200);
+          [100, 300, 600].forEach(ms => {
+            setTimeout(() => {
+              if (this.mapInstance) {
+                this.mapInstance.resize();
+              }
+            }, ms);
+          });
         };
+        shell._fsHandler = onFsChange;
         shell.addEventListener("fullscreenchange", onFsChange);
         shell.addEventListener("webkitfullscreenchange", onFsChange);
       },

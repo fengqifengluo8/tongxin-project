@@ -132,7 +132,12 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
             } else if ("COMMAND".equals(type)) {
                 String targetSessionId = json.getString("targetSessionId");
                 JSONObject order = json.getJSONObject("order");
-                
+                String orderId = order != null ? order.getString("id") : null;
+                String eventId = order != null ? order.getString("eventId") : null;
+                String eventType = order != null ? order.getString("eventType") : null;
+                String officerName = order != null ? order.getString("officerName") : null;
+
+                boolean delivered = false;
                 // 发送指令给目标警员
                 WebSocketSession targetSession = sessions.get(targetSessionId);
                 if (targetSession != null && targetSession.isOpen()) {
@@ -140,13 +145,29 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
                             "type", "COMMAND",
                             "order", order
                     )));
+                    delivered = true;
                 }
-                
-                // 发送确认给指挥中心
-                sendMessage(session, JSON.toJSONString(Map.of(
-                        "type", "COMMAND_ACK",
-                        "message", "指令已发送"
-                )));
+
+                // 发送确认给指挥中心（包含事件ID以便更新状态）
+                Map<String, Object> ackMap = new java.util.HashMap<>();
+                ackMap.put("type", "COMMAND_ACK");
+                ackMap.put("orderId", orderId);
+                ackMap.put("eventId", eventId);
+                ackMap.put("delivered", delivered);
+                ackMap.put("message", delivered ? "指令已发送" : "目标警员不在线");
+                sendMessage(session, JSON.toJSONString(ackMap));
+
+                // 广播事件状态更新给所有指挥端
+                if (eventId != null) {
+                    Map<String, Object> statusMap = new java.util.HashMap<>();
+                    statusMap.put("type", "EVENT_STATUS_UPDATE");
+                    statusMap.put("eventId", eventId);
+                    statusMap.put("status", "已指派");
+                    statusMap.put("eventType", eventType);
+                    statusMap.put("officerName", officerName);
+                    statusMap.put("orderId", orderId);
+                    broadcastMessage(JSON.toJSONString(statusMap));
+                }
             } else if ("STATUS_UPDATE".equals(type)) {
                 String status = json.getString("status");
                 String sessionId = session.getId();

@@ -235,9 +235,9 @@
               </div>
               <div class="table-row" v-for="ev in commanderEvents" :key="ev.id">
                 <span>{{ ev.id }}</span><span>{{ ev.type }}</span><span>{{ ev.priority }}</span
-                ><span>{{ ev.status }}</span><span>{{ ev.region }}</span>
+                ><span><span class="status-badge" :class="'status-' + (ev.status === 'pending' ? '待处理' : ev.status)">{{ ev.status }}</span></span><span>{{ ev.region }}</span>
                 <span>
-                  <button type="button" class="btn btn-primary btn-sm" @click="issueCommand(ev)">下达指令</button>
+                  <button type="button" class="btn btn-primary btn-sm" @click="issueCommand(ev)" :disabled="ev.status === '已指派'">{{ ev.status === '已指派' ? '已指派' : '下达指令' }}</button>
                 </span>
               </div>
               <div v-if="commanderEvents.length === 0 && !eventsLoading" class="table-row">
@@ -852,6 +852,6 @@
       </div>
     </div>
 
-    <script src="app.js?v=4"></script>
+    <script src="app.js?v=10"></script>
   </body>
 </html>
