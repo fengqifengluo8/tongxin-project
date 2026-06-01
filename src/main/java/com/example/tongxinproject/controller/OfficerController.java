@@ -4,6 +4,7 @@ import com.example.tongxinproject.common.Result;
 import com.example.tongxinproject.dto.OfficerReportRequest;
 import com.example.tongxinproject.entity.Alarm;
 import com.example.tongxinproject.mapper.AlarmMapper;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
@@ -21,7 +22,7 @@ public class OfficerController {
 
     @PostMapping("/report")
     @Transactional
-    public Result<Map<String, Object>> reportEvent(@RequestBody OfficerReportRequest request) {
+    public Result<Map<String, Object>> reportEvent(@Valid @RequestBody OfficerReportRequest request) {
         Alarm alarm = new Alarm();
         alarm.setType(request.getType());
         alarm.setContent(request.getText());
@@ -45,11 +46,13 @@ public class OfficerController {
 
     @PostMapping("/reinforce")
     @Transactional
-    public Result<Map<String, Object>> requestReinforce(@RequestBody OfficerReportRequest request) {
+    public Result<Map<String, Object>> requestReinforce(@Valid @RequestBody OfficerReportRequest request) {
         Alarm alarm = new Alarm();
         alarm.setType("增援请求");
         alarm.setContent(request.getText());
-        if (request.getLng() != null && request.getLat() != null) {
+        // 统一使用useLocation字段判断是否附带位置
+        if (request.getUseLocation() != null && request.getUseLocation()
+                && request.getLng() != null && request.getLat() != null) {
             alarm.setLng(request.getLng());
             alarm.setLat(request.getLat());
             alarm.setAddress(request.getAddress());

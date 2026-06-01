@@ -1,8 +1,12 @@
 package com.example.tongxinproject.controller;
 
+import com.example.tongxinproject.common.RateLimiter;
 import com.example.tongxinproject.common.Result;
+import com.example.tongxinproject.dto.LoginRequest;
+import com.example.tongxinproject.dto.RegisterRequest;
 import com.example.tongxinproject.entity.User;
-import com.example.tongxinproject.service.UserService;
+import com.example.tongxinproject.service.impl.UserServiceImpl;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -16,45 +20,44 @@ import java.util.Map;
 public class UserController {
 
     @Autowired
-    private UserService userService;
+    private UserServiceImpl userService;
+
+    @Autowired(required = false)
+    private RateLimiter rateLimiter;
 
     @PostMapping("/login")
-    public Result login(@RequestBody Map<String, String> request) {
-        String username = request.get("username");
-        String password = request.get("password");
-
-        if (username == null || password == null) {
-            return Result.error("用户名和密码不能为空");
-        }
-
-        User user = userService.login(username, password);
-        if (user == null) {
+    public Result<Map<String, Object>> login(@Valid @RequestBody LoginRequest request) {
+        Map<String, Object> result = userService.loginWithToken(
+                request.getUsername(), request.getPassword());
+        if (result == null) {
             return Result.error("用户名或密码错误");
         }
-
-        // 登录成功，返回用户信息（不含密码）
-        user.setPassword(null);
-        return Result.success(user);
+        return Result.success(result);
     }
 
     @PostMapping("/register")
-    public Result register(@RequestBody Map<String, String> request) {
-        String username = request.get("username");
-        String password = request.get("password");
-        String role = request.get("role");
-        String nickname = request.get("nickname");
-
-        if (username == null || password == null || role == null) {
-            return Result.error("用户名、密码和角色不能为空");
+    public Result<Map<String, Object>> register(@Valid @RequestBody RegisterRequest request) {
+        // 注册限流
+        if (rateLimiter != null && rateLimiter.isLocked("register:" + request.getUsername())) {
+            return Result.error("操作过于频繁，请稍后重试");
         }
-
-        User user = userService.register(username, password, role, nickname);
+        if (rateLimiter != null) {
+            rateLimiter.recordFailure("register:" + request.getUsername());
+        }
+        User user = userService.register(
+            request.getUsername(),
+            request.getPassword(),
+            request.getRole(),
+            request.getNickname()
+        );
         if (user == null) {
             return Result.error("用户名已存在");
         }
 
-        // 注册成功，返回用户信息（不含密码）
         user.setPassword(null);
-        return Result.success(user);
+        // 注册成功后自动签发JWT
+        Map<String, Object> result = userService.loginWithToken(
+                request.getUsername(), request.getPassword());
+        return Result.success(result);
     }
 }

@@ -3,6 +3,8 @@ package com.example.tongxinproject.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -17,6 +19,8 @@ import java.util.Map;
 
 @Service
 public class TrafficService {
+
+    private static final Logger log = LoggerFactory.getLogger(TrafficService.class);
 
     @Value("${amap.key}")
     private String amapKey;
@@ -96,8 +100,10 @@ public class TrafficService {
 
             JSONObject json = JSON.parseObject(response.toString());
             if ("1".equals(json.getString("status"))) {
-                JSONArray paths = json.getJSONArray("route").getJSONObject(0).getJSONArray("paths");
-                if (!paths.isEmpty()) {
+                JSONObject route = json.getJSONObject("route");
+                if (route == null) return result;
+                JSONArray paths = route.getJSONArray("paths");
+                if (paths != null && !paths.isEmpty()) {
                     JSONObject path = paths.getJSONObject(0);
                     result.put("distance", path.getDouble("distance"));
                     result.put("duration", path.getDouble("duration"));
@@ -111,8 +117,8 @@ public class TrafficService {
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
-            result.put("error", e.getMessage());
+            log.warn("Failed to get traffic info: {}", e.getMessage());
+            result.put("error", "traffic_service_unavailable");
         }
         return result;
     }
@@ -139,9 +145,9 @@ public class TrafficService {
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            log.debug("Failed to estimate traffic light count: {}", e.getMessage());
         }
-        return Math.max(count, 1); // 至少估算1个红绿灯
+        return Math.max(count, 0);
     }
 
     /**
@@ -192,7 +198,7 @@ public class TrafficService {
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            log.debug("Failed to get road type: {}", e.getMessage());
         }
         return "城市道路";
     }
@@ -257,7 +263,7 @@ public class TrafficService {
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            log.warn("Failed to get weather info: {}", e.getMessage());
             result.put("weather", "晴");
             result.put("weather_factor", 1.0);
         }

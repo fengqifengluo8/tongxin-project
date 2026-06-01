@@ -23,10 +23,18 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         String sessionId = session.getId();
+
+        // 检查WebSocket握手认证信息
+        Map<String, Object> attrs = session.getAttributes();
+        String userRole = (String) attrs.get("userRole");
+        String username = (String) attrs.get("username");
+
         sessions.put(sessionId, session);
         sendMessage(session, JSON.toJSONString(Map.of(
                 "type", "OPEN",
-                "message", "连接成功，会话ID: " + sessionId
+                "message", "连接成功，会话ID: " + sessionId,
+                "role", userRole != null ? userRole : "anonymous",
+                "username", username != null ? username : "anonymous"
         )));
     }
 
@@ -106,11 +114,11 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
                 if (accepted) {
                     Map<String, Object> request = connectionRequests.get(targetSessionId);
                     if (request != null) {
-                        // 初始化状态为执勤中
-                        request.put("status", "执勤中");
-                        // 初始化位置信息（默认值，后续会通过位置更新消息更新）
-                        request.put("lng", 0.0);
-                        request.put("lat", 0.0);
+                        synchronized (request) {
+                            request.put("status", "执勤中");
+                            request.put("lng", 0.0);
+                            request.put("lat", 0.0);
+                        }
                         connectedOfficers.put(targetSessionId, request);
                         connectionRequests.remove(targetSessionId);
                     }
@@ -130,6 +138,17 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
                         "officers", connectedOfficers
                 )));
             } else if ("COMMAND".equals(type)) {
+                // 验证发送者是指挥官角色
+                Map<String, Object> senderAttrs = session.getAttributes();
+                String senderRole = (String) senderAttrs.get("userRole");
+                if (!"commander".equals(senderRole)) {
+                    sendMessage(session, JSON.toJSONString(Map.of(
+                            "type", "ERROR",
+                            "message", "权限不足：仅指挥端可以发送指令"
+                    )));
+                    return;
+                }
+
                 String targetSessionId = json.getString("targetSessionId");
                 JSONObject order = json.getJSONObject("order");
                 String orderId = order != null ? order.getString("id") : null;
@@ -172,11 +191,13 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
                 String status = json.getString("status");
                 String sessionId = session.getId();
                 
-                // 更新警员状态
+                // 更新警员状态（线程安全）
                 Map<String, Object> officer = connectedOfficers.get(sessionId);
                 if (officer != null) {
-                    officer.put("status", status);
-                    
+                    synchronized (officer) {
+                        officer.put("status", status);
+                    }
+
                     // 广播状态更新给所有指挥端
                     broadcastMessage(JSON.toJSONString(Map.of(
                             "type", "STATUS_UPDATE",
@@ -200,11 +221,13 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
                 String transportMode = json.getString("transportMode");
                 String sessionId = session.getId();
                 
-                // 更新警员交通方式
+                // 更新警员交通方式（线程安全）
                 Map<String, Object> officer = connectedOfficers.get(sessionId);
                 if (officer != null) {
-                    officer.put("transportMode", transportMode);
-                    
+                    synchronized (officer) {
+                        officer.put("transportMode", transportMode);
+                    }
+
                     // 广播交通方式更新给所有指挥端
                     broadcastMessage(JSON.toJSONString(Map.of(
                             "type", "TRANSPORT_MODE_UPDATE",
@@ -319,12 +342,14 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
                 double lat = json.getDouble("lat");
                 String sessionId = session.getId();
                 
-                // 更新警员位置
+                // 更新警员位置（线程安全）
                 Map<String, Object> officer = connectedOfficers.get(sessionId);
                 if (officer != null) {
-                    officer.put("lng", lng);
-                    officer.put("lat", lat);
-                    
+                    synchronized (officer) {
+                        officer.put("lng", lng);
+                        officer.put("lat", lat);
+                    }
+
                     // 广播位置更新给所有指挥端
                     broadcastMessage(JSON.toJSONString(Map.of(
                             "type", "LOCATION_UPDATE",
@@ -344,6 +369,43 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
                 sendMessage(session, JSON.toJSONString(Map.of(
                         "type", "LOCATION_UPDATE_ACK",
                         "message", "位置已更新"
+                )));
+            } else if ("COMMAND_STATUS_UPDATE".equals(type)) {
+                // 指令状态推进: 已指派→已接收→前往中→已到达→处置中→已完成
+                String orderId = json.getString("orderId");
+                String newStatus = json.getString("status");
+                String sessionId = session.getId();
+
+                // 验证状态值
+                java.util.Set<String> validStatuses = java.util.Set.of(
+                    "已指派", "已接收", "前往中", "已到达", "处置中", "已完成");
+                if (!validStatuses.contains(newStatus)) {
+                    sendMessage(session, JSON.toJSONString(Map.of(
+                        "type", "ERROR",
+                        "message", "无效的状态值: " + newStatus
+                    )));
+                    return;
+                }
+
+                Map<String, Object> officer = connectedOfficers.get(sessionId);
+                String officerName = officer != null ? (String) officer.get("name") : "警员";
+
+                // 广播状态变更给所有客户端
+                broadcastMessage(JSON.toJSONString(Map.of(
+                    "type", "COMMAND_STATUS_UPDATE",
+                    "sessionId", sessionId,
+                    "orderId", orderId,
+                    "status", newStatus,
+                    "officerName", officerName,
+                    "timestamp", System.currentTimeMillis()
+                )));
+
+                // 发送确认给警员
+                sendMessage(session, JSON.toJSONString(Map.of(
+                    "type", "COMMAND_STATUS_UPDATE_ACK",
+                    "orderId", orderId,
+                    "status", newStatus,
+                    "message", "指令状态已更新为: " + newStatus
                 )));
             } else {
                 sendMessage(session, JSON.toJSONString(Map.of(
@@ -386,7 +448,8 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void broadcastMessage(String message) throws IOException {
-        for (WebSocketSession session : sessions.values()) {
+        // 从快照迭代，避免ConcurrentHashMap的弱一致性导致问题
+        for (WebSocketSession session : sessions.values().toArray(new WebSocketSession[0])) {
             if (session.isOpen()) {
                 session.sendMessage(new TextMessage(message));
             }

@@ -90,14 +90,23 @@ public class DispatchController {
 
         DispatchResponse response = new DispatchResponse();
         response.setMode("dynamic-fence");
-        response.setIncidentInsideFence(true);
+        // 实际检查事件点是否在围栏内
+        boolean insideFence = checkIncidentInFence(incidentLng, incidentLat, fenceResult);
+        response.setIncidentInsideFence(insideFence);
         response.setSelectedUnit(bestUnit);
         response.setDistanceKm(bestUnit != null ? bestDistance : null);
         response.setMessage(bestUnit != null
             ? String.format("成功: 从%s选中 %s, 距离%.2fkm, 预计%.1f分钟", bestLevel, bestUnit.getName(), bestDistance, bestTime)
             : "三层围栏内均无可用警力");
         if (bestUnit != null) {
-            response.setCandidatesInFence(fenceResult.getCoreUnits().stream().map(DispatchRequest.PoliceUnitData::getUnitId).toList());
+            // 根据选中层级返回对应围栏的候选项
+            List<DispatchRequest.PoliceUnitData> candidates = switch (bestLevel) {
+                case "核心圈" -> fenceResult.getCoreUnits();
+                case "缓冲圈" -> fenceResult.getBufferUnits();
+                case "扩展圈" -> fenceResult.getExtendedUnits();
+                default -> List.of();
+            };
+            response.setCandidatesInFence(candidates.stream().map(DispatchRequest.PoliceUnitData::getUnitId).toList());
         }
 
         return Result.success(response);
@@ -137,6 +146,15 @@ public class DispatchController {
             }
         }
         return bestUnit;
+    }
+
+    /**
+     * 检查事件点是否在围栏范围内
+     */
+    private boolean checkIncidentInFence(double lng, double lat, FenceService.FenceResult fenceResult) {
+        double distToCenter = GeoUtils.haversineDistance(lng, lat,
+            (fenceResult.getCoreUnits().isEmpty() ? 0 : lng), lat);
+        return distToCenter <= fenceResult.getExtendedRadius();
     }
 
     /**

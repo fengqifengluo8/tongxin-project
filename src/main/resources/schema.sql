@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS `public_event` (
     `type` VARCHAR(100),
     `title` VARCHAR(255),
     `area` VARCHAR(255),
-    `event_time` VARCHAR(255),
+    `event_time` DATETIME COMMENT '事件发生时间',
     `tip` TEXT,
     `lng` DOUBLE,
     `lat` DOUBLE,

@@ -6,20 +6,27 @@ import com.alibaba.fastjson2.JSONObject;
 import com.example.tongxinproject.common.GeoUtils;
 import com.example.tongxinproject.dto.DispatchRequest;
 import com.example.tongxinproject.dto.FencePolygonResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import jakarta.annotation.PostConstruct;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class FenceService {
+
+    private static final Logger log = LoggerFactory.getLogger(FenceService.class);
 
     @Autowired
     private TrafficService trafficService;
@@ -32,8 +39,12 @@ public class FenceService {
     private static final double BUFFER_FENCE_RADIUS = 8.0;
     private static final double EXTENDED_FENCE_RADIUS = 15.0;
 
-    // 采样方向数（每15度一个采样点，共24个方向）
-    private static final int SAMPLE_DIRECTIONS = 36;  // 提升到36方向（每10度），更高精度
+    // 采样方向数（按层差异化：核心圈高精度，扩展圈低精度以减少API调用）
+    private static final Map<FenceLevel, Integer> SAMPLE_DIRECTIONS_PER_LAYER = Map.of(
+        FenceLevel.CORE, 24,      // 每15°
+        FenceLevel.BUFFER, 18,    // 每20°
+        FenceLevel.EXTENDED, 12   // 每30°
+    );
 
     // 建筑密集度系数（基于道路类型推断）
     private static final Map<String, Double> BUILDING_DENSITY_FACTORS = new HashMap<>();
@@ -73,10 +84,18 @@ public class FenceService {
     // 红绿灯平均等待时间（分钟）
     private static final double AVG_LIGHT_WAIT_MINUTES = 0.5;
 
-    // 缓存
-    private final Map<String, RoadEnvironment> envCache = new ConcurrentHashMap<>();
-    private final Map<String, String> trafficCache = new ConcurrentHashMap<>();
-    private final Map<String, Double> waterDistanceCache = new ConcurrentHashMap<>();  // 水系距离缓存
+    // TTL缓存包装
+    private static class CacheEntry<V> {
+        final V value;
+        final long createdAt;
+        CacheEntry(V value) { this.value = value; this.createdAt = System.currentTimeMillis(); }
+        boolean isExpired(long ttlMs) { return System.currentTimeMillis() - createdAt > ttlMs; }
+    }
+
+    // 缓存（带TTL自动过期）
+    private final Map<String, CacheEntry<RoadEnvironment>> envCache = new ConcurrentHashMap<>();
+    private final Map<String, CacheEntry<String>> trafficCache = new ConcurrentHashMap<>();
+    // waterDistanceCache 已删除 — 死代码从未被读写
 
     /**
      * 增强版道路环境信息
@@ -95,6 +114,22 @@ public class FenceService {
             this.populationDensityFactor = populationDensityFactor;
             this.poiCount = poiCount;
         }
+    }
+
+    // 缓存TTL常量（毫秒）
+    private static final long ENV_CACHE_TTL_MS = 300_000;     // 环境数据: 5分钟
+    private static final long TRAFFIC_CACHE_TTL_MS = 60_000;  // 交通数据: 1分钟
+
+    @PostConstruct
+    public void initCacheCleanup() {
+        Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "fence-cache-cleanup");
+            t.setDaemon(true);
+            return t;
+        }).scheduleWithFixedDelay(() -> {
+            envCache.entrySet().removeIf(e -> e.getValue().isExpired(ENV_CACHE_TTL_MS));
+            trafficCache.entrySet().removeIf(e -> e.getValue().isExpired(TRAFFIC_CACHE_TTL_MS));
+        }, 60, 60, TimeUnit.SECONDS);
     }
 
     public enum FenceLevel {
@@ -132,6 +167,7 @@ public class FenceService {
             String origin = lng + "," + lat;
             String destination = lng + 0.01 + "," + lat + 0.01;
             Map<String, Object> trafficInfo = trafficService.getTrafficInfo(origin, destination);
+            if (trafficInfo.containsKey("error")) return 1.0;
             String trafficStatus = (String) trafficInfo.get("traffic_status");
             if (trafficStatus != null) {
                 switch (trafficStatus) {
@@ -142,7 +178,9 @@ public class FenceService {
                     default: return 1.0;
                 }
             }
-        } catch (Exception e) { e.printStackTrace(); }
+        } catch (Exception e) {
+            log.debug("Failed to get traffic adjustment: {}", e.getMessage());
+        }
         return 1.0;
     }
 
@@ -166,7 +204,7 @@ public class FenceService {
             double centerLng, double centerLat, FenceLevel level) {
         List<DispatchRequest.PoliceUnitData> result = new ArrayList<>();
         for (DispatchRequest.PoliceUnitData unit : units) {
-            if (unit.isAvailable() && isPointInFence(unit.getLng(), unit.getLat(), centerLng, centerLat, level))
+            if (Boolean.TRUE.equals(unit.getAvailable()) && isPointInFence(unit.getLng(), unit.getLat(), centerLng, centerLat, level))
                 result.add(unit);
         }
         return result;
@@ -180,7 +218,7 @@ public class FenceService {
 
         List<DispatchRequest.PoliceUnitData> bufferUnits = new ArrayList<>();
         for (DispatchRequest.PoliceUnitData unit : units) {
-            if (unit.isAvailable() &&
+            if (Boolean.TRUE.equals(unit.getAvailable()) &&
                 isPointInFence(unit.getLng(), unit.getLat(), centerLng, centerLat, FenceLevel.BUFFER) &&
                 !isPointInFence(unit.getLng(), unit.getLat(), centerLng, centerLat, FenceLevel.CORE))
                 bufferUnits.add(unit);
@@ -190,7 +228,7 @@ public class FenceService {
 
         List<DispatchRequest.PoliceUnitData> extendedUnits = new ArrayList<>();
         for (DispatchRequest.PoliceUnitData unit : units) {
-            if (unit.isAvailable() &&
+            if (Boolean.TRUE.equals(unit.getAvailable()) &&
                 isPointInFence(unit.getLng(), unit.getLat(), centerLng, centerLat, FenceLevel.EXTENDED) &&
                 !isPointInFence(unit.getLng(), unit.getLat(), centerLng, centerLat, FenceLevel.BUFFER))
                 extendedUnits.add(unit);
@@ -229,17 +267,15 @@ public class FenceService {
         response.setCenterLng(centerLng);
         response.setCenterLat(centerLat);
 
-        envCache.clear();
-        trafficCache.clear();
-        waterDistanceCache.clear();
-
-        double weatherFactor = getWeatherAdjustFactor(centerLng, centerLat);
+        // BugFix: 不再清空缓存（缓存有TTL自动过期），避免重复API调用
+        // BugFix: 修复重复天气API调用 — 只调用一次
         Map<String, Object> weatherInfo = trafficService.getWeatherInfo(centerLng, centerLat);
+        double weatherFactor = (Double) weatherInfo.getOrDefault("weather_factor", 1.0);
 
         Map<String, Object> factorDetails = new LinkedHashMap<>();
         factorDetails.put("weather", weatherInfo.getOrDefault("weather", "晴"));
         factorDetails.put("weather_factor", weatherFactor);
-        factorDetails.put("sample_directions", SAMPLE_DIRECTIONS);
+        factorDetails.put("sample_directions", "CORE:24/BUFFER:18/EXTENDED:12");
         factorDetails.put("algorithm", "multi-scale_terrain_aware_isochrone");
 
         Map<String, Integer> roadTypeStats = new HashMap<>();
@@ -284,25 +320,27 @@ public class FenceService {
         layer.setName(level.getName());
         layer.setLevel(level.name());
         layer.setBaseRadius(level.getBaseRadius());
-        layer.setSampleCount(SAMPLE_DIRECTIONS);
+        int sampleDirs = SAMPLE_DIRECTIONS_PER_LAYER.getOrDefault(level, 18);
+        layer.setSampleCount(sampleDirs);
 
         // 多层采样比例：距中心不同距离评估环境
+        // BugFix: EXTENDED层从4个采样比降为3个，减少API调用
         double[] sampleRatios;
         if (level == FenceLevel.EXTENDED) {
-            sampleRatios = new double[]{0.25, 0.5, 0.75, 1.0};
+            sampleRatios = new double[]{0.33, 0.66, 1.0};
         } else if (level == FenceLevel.BUFFER) {
             sampleRatios = new double[]{0.4, 0.7, 1.0};
         } else {
             sampleRatios = new double[]{0.5, 1.0};
         }
 
-        double[] rawAdjustments = new double[SAMPLE_DIRECTIONS];
-        String[] directionRoadTypes = new String[SAMPLE_DIRECTIONS];
-        String[] directionTraffic = new String[SAMPLE_DIRECTIONS];
+        double[] rawAdjustments = new double[sampleDirs];
+        String[] directionRoadTypes = new String[sampleDirs];
+        String[] directionTraffic = new String[sampleDirs];
 
-        for (int i = 0; i < SAMPLE_DIRECTIONS; i++) {
+        for (int i = 0; i < sampleDirs; i++) {
             // 角度错开 + 微扰动（模拟实际道路不会正好在采样方向上）
-            double baseAngleDeg = (360.0 / SAMPLE_DIRECTIONS) * i + angleOffsetDeg;
+            double baseAngleDeg = (360.0 / sampleDirs) * i + angleOffsetDeg;
             // 微扰动：±2°的确定性抖动
             double jitter = (hashCoordinate(centerLng + i * 0.001, centerLat) - 0.5) * 4.0;
             double angleDeg = baseAngleDeg + jitter;
@@ -380,8 +418,8 @@ public class FenceService {
         List<FencePolygonResponse.FenceVertex> vertices = new ArrayList<>();
         double totalEffAdjustment = 0;
 
-        for (int i = 0; i < SAMPLE_DIRECTIONS; i++) {
-            double angleDeg = (360.0 / SAMPLE_DIRECTIONS) * i + angleOffsetDeg;
+        for (int i = 0; i < sampleDirs; i++) {
+            double angleDeg = (360.0 / sampleDirs) * i + angleOffsetDeg;
             double angleRad = Math.toRadians(angleDeg);
             double adjustment = smoothedAdjustments[i];
             double adjustedDistance = level.getBaseRadius() * adjustment;
@@ -403,7 +441,7 @@ public class FenceService {
             vertices.add(vertex);
         }
 
-        layer.setEffectiveRadius(level.getBaseRadius() * (totalEffAdjustment / SAMPLE_DIRECTIONS));
+        layer.setEffectiveRadius(level.getBaseRadius() * (totalEffAdjustment / sampleDirs));
         layer.setVertices(vertices);
         return layer;
     }
@@ -546,15 +584,14 @@ public class FenceService {
 
     /**
      * 获取缓存的道路环境信息（一次API调用同时获取道路类型和人口密度）
+     * BugFix: 使用computeIfAbsent消除竞态条件，TTL自动过期
      */
     private RoadEnvironment getCachedEnvironment(double lng, double lat) {
-        String cacheKey = String.format("%.2f,%.2f", lng, lat);
-        if (envCache.containsKey(cacheKey)) {
-            return envCache.get(cacheKey);
-        }
-        RoadEnvironment env = queryEnvironment(lng, lat);
-        envCache.put(cacheKey, env);
-        return env;
+        // 提高精度到3位小数(约111m), 提升跨层缓存命中率
+        String cacheKey = String.format("%.3f,%.3f", lng, lat);
+        CacheEntry<RoadEnvironment> entry = envCache.computeIfAbsent(cacheKey,
+            k -> new CacheEntry<>(queryEnvironment(lng, lat)));
+        return entry.value;
     }
 
     /**
@@ -729,7 +766,7 @@ public class FenceService {
                     }
                 }
             } catch (Exception ignored) {
-                // 周边搜索失败不影响主流程
+                log.debug("POI around search failed (non-critical): {}", ignored.getMessage());
             }
         } catch (Exception e) {
             // 降级：使用地形噪声推断
@@ -757,16 +794,12 @@ public class FenceService {
      * 获取缓存的路况状态
      */
     private String getCachedTrafficStatus(double lng, double lat, double centerLng, double centerLat) {
-        String cacheKey = String.format("%.2f,%.2f", lng, lat);
-        if (trafficCache.containsKey(cacheKey)) {
-            return trafficCache.get(cacheKey);
-        }
-
-        // 基于方向和道路类型模拟路况（实际应用中应调用高德交通态势API）
-        String roadType = getCachedRoadType(lng, lat);
-        String status = simulateTrafficStatus(roadType, lng, lat, centerLng, centerLat);
-        trafficCache.put(cacheKey, status);
-        return status;
+        // BugFix: computeIfAbsent消除竞态条件, 提高精度到3位小数
+        String cacheKey = String.format("%.3f,%.3f", lng, lat);
+        CacheEntry<String> entry = trafficCache.computeIfAbsent(cacheKey,
+            k -> new CacheEntry<>(simulateTrafficStatus(
+                getCachedRoadType(lng, lat), lng, lat, centerLng, centerLat)));
+        return entry.value;
     }
 
     /**
@@ -779,9 +812,12 @@ public class FenceService {
             String origin = centerLng + "," + centerLat;
             String destination = lng + "," + lat;
             Map<String, Object> trafficInfo = trafficService.getTrafficInfo(origin, destination);
+            if (trafficInfo.containsKey("error")) return null;
             String status = (String) trafficInfo.get("traffic_status");
             if (status != null) return status;
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+            log.debug("Traffic info API failed, using fallback: {}", ignored.getMessage());
+        }
 
         // 降级：基于道路类型 + 时段 + 坐标哈希进行确定性计算
         // 使用坐标哈希值（0-1之间），同一坐标始终得到相同结果

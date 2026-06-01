@@ -24,9 +24,12 @@ public class GeoUtils {
             double yi = polygon.get(i).getLat();
             double xj = polygon.get(j).getLng();
             double yj = polygon.get(j).getLat();
-            
+
+            // 跳过近似水平边（ε=1e-10），避免除以零导致计算失真
+            if (Math.abs(yj - yi) < 1e-10) continue;
+
             boolean intersect = ((yi > lat) != (yj > lat)) &&
-                (lng < (xj - xi) * (lat - yi) / (yj - yi + 1e-15) + xi);
+                (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
             if (intersect) {
                 inside = !inside;
             }

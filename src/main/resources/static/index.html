@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover"
     />
     <title>警务指挥通信平台</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -13,15 +13,31 @@
       href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+    </script>
     <script src="https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js"></script>
-    <link rel="stylesheet" href="style.css?v=10" />
+    <link rel="stylesheet" href="style.css?v=11" />
   </head>
   <body>
+    <canvas id="bg-canvas" style="position:fixed;inset:0;z-index:-1;pointer-events:none;"></canvas>
     <div id="app">
       <!-- 未登录：虚拟城市 + 过渡 + 弹窗 -->
       <div class="auth-page" v-if="!isLoggedIn">
         <img class="auth-badge-logo" src="police-badge.png" alt="警徽" aria-hidden="true" />
         <div class="auth-badge-watermark" aria-hidden="true"></div>
+
+        <!-- 服务器连通性指示器 -->
+        <div class="server-status" v-if="serverOnline !== null" :class="{ online: serverOnline, offline: !serverOnline }" :title="serverHint">
+          <span class="status-dot"></span>
+          {{ serverOnline ? '服务器已连接' : (serverHint || '服务器离线') }}
+          <a v-if="!serverOnline && serverHint.includes('证书')" href="/cert-help" style="color:#fbbf24;margin-left:.5rem">安装证书→</a>
+        </div>
 
         <div class="city-hub" v-show="authStage === 'hub' || authStage === 'transition'">
           <header class="hub-header">
@@ -170,6 +186,23 @@
         </div>
       </div>
 
+      <!-- 屏幕阅读器公告区（隐藏但可被SR读取） -->
+      <div class="sr-only" aria-live="assertive" role="status"></div>
+      <!-- Toast通知容器 -->
+      <div class="toast-container" aria-live="polite" v-if="toasts.length">
+        <div v-for="t in toasts" :key="t.id" class="toast" :class="'toast-' + t.type">{{ t.message }}</div>
+      </div>
+      <!-- 确认弹窗 -->
+      <div class="confirm-backdrop" v-if="confirmDialog.show" @click.self="dismissConfirm">
+        <div class="confirm-modal">
+          <h3>{{ confirmDialog.title }}</h3>
+          <p>{{ confirmDialog.message }}</p>
+          <div class="confirm-actions">
+            <button type="button" class="btn btn-ghost" @click="dismissConfirm">取消</button>
+            <button type="button" class="btn btn-primary" @click="executeConfirm">确认</button>
+          </div>
+        </div>
+      </div>
       <!-- 已登录主界面 -->
       <div class="app-main" v-else>
         <div class="guest-intro-overlay" v-if="userRole === 'guest' && showGuestIntro">
@@ -234,8 +267,8 @@
                 <span>编号</span><span>类型</span><span>优先级</span><span>状态</span><span>区域</span><span>操作</span>
               </div>
               <div class="table-row" v-for="ev in commanderEvents" :key="ev.id">
-                <span>{{ ev.id }}</span><span>{{ ev.type }}</span><span>{{ ev.priority }}</span
-                ><span><span class="status-badge" :class="'status-' + (ev.status === 'pending' ? '待处理' : ev.status)">{{ ev.status }}</span></span><span>{{ ev.region }}</span>
+                <span data-label="编号">{{ ev.id }}</span><span data-label="类型">{{ ev.type }}</span><span data-label="优先级">{{ ev.priority }}</span
+                ><span data-label="状态"><span class="status-badge" :class="'status-' + (ev.status === 'pending' ? '待处理' : ev.status)">{{ ev.status === 'pending' ? '待处理' : ev.status }}</span></span><span data-label="区域">{{ ev.region }}</span>
                 <span>
                   <button type="button" class="btn btn-primary btn-sm" @click="issueCommand(ev)" :disabled="ev.status === '已指派'">{{ ev.status === '已指派' ? '已指派' : '下达指令' }}</button>
                 </span>
@@ -255,14 +288,12 @@
                 <span>编号</span><span>姓名</span><span>状态</span><span>交通方式</span><span>操作</span>
               </div>
               <div class="table-row police-officer" v-for="officer in connectedOfficers" :key="officer.sessionId">
-                <span>{{ officer.unitId }}</span><span>{{ officer.name }} <span class="rating-badge" :class="{'low': getOfficerRating(officer.name) < 3, 'medium': getOfficerRating(officer.name) >= 3 && getOfficerRating(officer.name) < 4, 'high': getOfficerRating(officer.name) >= 4}" v-if="getOfficerRating(officer.name) > 0">{{ getOfficerRating(officer.name).toFixed(1) }}★</span><span v-else>(暂无)</span></span>
-                <span>
-                  <span class="status-badge" :class="'status-' + officer.status">
-                    {{ officer.status }}
-                  </span>
+                <span data-label="编号">{{ officer.unitId }}</span><span data-label="姓名">{{ officer.name }} <span class="rating-badge" :class="{'low': getOfficerRating(officer.name) < 3, 'medium': getOfficerRating(officer.name) >= 3 && getOfficerRating(officer.name) < 4, 'high': getOfficerRating(officer.name) >= 4}" v-if="getOfficerRating(officer.name) > 0">{{ getOfficerRating(officer.name).toFixed(1) }}★</span><span v-else>(暂无)</span></span>
+                <span data-label="状态">
+                  <span class="status-badge" :class="'status-' + officer.status">{{ officer.status }}</span>
                 </span>
-                <span>{{ officer.transportMode || '步行' }}</span>
-                <span>
+                <span data-label="交通方式">{{ officer.transportMode || '步行' }}</span>
+                <span data-label="操作">
                   <button type="button" class="btn btn-primary btn-sm" @click="currentChatTarget = officer; focusTextarea()">对话</button>
                 </span>
               </div>
@@ -460,7 +491,7 @@
             </div>
             
             <!-- 当前对话目标 -->
-            <div v-if="currentChatTarget" class="connection-status accepted">
+            <div v-if="currentChatTarget" class="connection-status" :class="pendingConnection && pendingConnection.accepted ? 'accepted' : 'rejected'">
               <span>当前对话：{{ currentChatTarget.name }} ({{ currentChatTarget.unitId }})</span>
             </div>
             
@@ -624,13 +655,34 @@
             <div class="officer-side-col">
               <section class="card">
                 <h2>附近待处理 <span class="tag">周边</span></h2>
-
+                <div class="incident-tile" :class="{ 'is-focus': mapFocusId === 'nearby-' + n.id }" v-for="n in nearbyIncidents" :key="n.id">
+                  <div class="incident-tile-top">
+                    <span class="it-type">{{ n.type }}</span>
+                    <span class="it-dist">{{ n.brief }}</span>
+                  </div>
+                  <p class="order-coord text-mono">{{ n.lng.toFixed(4) }}, {{ n.lat.toFixed(4) }}</p>
+                  <div class="btn-row-2">
+                    <button type="button" class="btn btn-ghost btn-sm" @click="focusMapItem('nearby', n.id)">地图查看</button>
+                  </div>
+                </div>
+                <p v-if="nearbyIncidents.length === 0" class="hint">暂无周边警情</p>
               </section>
 
               <section class="card">
                 <h2>可自主援助</h2>
                 <p class="hint">非紧急支援，报名后由指挥确认。</p>
-
+                <div class="incident-tile incident-tile--vol" :class="{ 'is-focus': mapFocusId === 'volunteer-' + v.id }" v-for="v in volunteerIncidents" :key="v.id">
+                  <div class="incident-tile-top">
+                    <span class="it-type">{{ v.type }}</span>
+                    <span class="it-dist">{{ v.brief }}</span>
+                  </div>
+                  <p class="order-coord text-mono">{{ v.lng.toFixed(4) }}, {{ v.lat.toFixed(4) }}</p>
+                  <div class="btn-row-2">
+                    <button type="button" class="btn btn-ghost btn-sm" @click="focusMapItem('volunteer', v.id)">地图查看</button>
+                    <button type="button" class="btn btn-primary btn-sm" @click="markVolunteer(v.id)">报名援助</button>
+                  </div>
+                </div>
+                <p v-if="volunteerIncidents.length === 0" class="hint">暂无可援助事件</p>
               </section>
             </div>
           </div>
@@ -844,14 +896,11 @@
               <p class="risk-line">风险提示：请根据提示调整路线，注意现场秩序与交通安全。</p>
               <button type="button" class="btn btn-ghost" @click="focusMapItem('public', selectedPublicEvent.id)">在地图上定位</button>
             </section>
-            
-
-          </section>
           </div>
         </div>
       </div>
     </div>
 
-    <script src="app.js?v=11"></script>
+    <script src="app.js?v=23"></script>
   </body>
 </html>

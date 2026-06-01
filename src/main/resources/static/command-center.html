@@ -37,8 +37,9 @@
       overflow: hidden;
       height: 100vh;
       width: 100vw;
-      user-select: none;
     }
+    /* 仅UI控件禁止选中，保留文本可选 */
+    .btn, .mc-btn, .panel-header, button { user-select: none; }
 
     #three-canvas {
       position: fixed;
@@ -560,7 +561,7 @@
           <span class="icon-bracket">[</span> 历史轨迹热力图 <span class="divider"></span>
         </div>
         <div class="heatmap-mini" id="heatmap-container">
-          <canvas id="heatmap-canvas"></canvas>
+          <canvas id="heatmap-canvas" aria-label="历史轨迹热力图" role="img"></canvas>
         </div>
         <div class="data-row" style="margin-top: 6px;">
           <span class="data-label">轨迹点数</span>
@@ -1223,7 +1224,7 @@
       if (suspectOldPos.distanceTo(sphereData.suspect.pos) > 0.05) {
         addTrailPoint(sphereData.suspect.trail, sphereData.suspect.pos, sphereData.suspect.maxTrail);
         updateTrailLine(suspectTrail, sphereData.suspect.trail);
-        addTrailPoint(heatmapTrail, sphereData.suspect.pos, 500);
+        addTrailPoint(heatmapTrail, sphereData.suspect.pos, 300);
       }
 
       sphereData.drone.pos = getPathPosition('drone', pathTimer.drone);

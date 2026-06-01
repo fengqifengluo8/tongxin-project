@@ -6,6 +6,87 @@
   const LS_SESSION = "pcmp_session_v2";
   const LS_AMAP = "pcmp_amap_keys";
   const LS_GUEST_INTRO = "pcmp_guest_intro_seen";
+  const LS_TOKEN = "pcmp_token";
+
+  // 调试开关（生产环境应为false）
+  const DEBUG = false;
+
+  // JWT令牌管理
+  let authToken = null;
+  function getToken() {
+    if (authToken) return authToken;
+    try { authToken = localStorage.getItem(LS_TOKEN); } catch { authToken = null; }
+    return authToken;
+  }
+  function setToken(token) {
+    authToken = token;
+    if (token) { safeSetItem(LS_TOKEN, token); }
+    else { try { localStorage.removeItem(LS_TOKEN); } catch {} }
+  }
+  function clearToken() { setToken(null); }
+
+  // localStorage安全写入（处理QuotaExceededError）
+  function safeSetItem(key, value) {
+    try { localStorage.setItem(key, value); }
+    catch (e) {
+      if (e.name === 'QuotaExceededError') {
+        console.warn('localStorage full, clearing old data');
+        try { localStorage.clear(); localStorage.setItem(key, value); }
+        catch {}
+      }
+    }
+  }
+
+  // 统一的fetch封装（自动附加JWT）
+  // 上次连接测试结果（避免重复检测）
+  let lastConnectivityCheck = null;
+
+  // 检测服务器连接状态
+  async function checkConnectivity() {
+    try {
+      const res = await fetch("/actuator/health", { method: "HEAD", cache: "no-cache" });
+      lastConnectivityCheck = { ok: res.ok, time: Date.now(), error: null };
+      return lastConnectivityCheck;
+    } catch (e) {
+      let hint = "无法连接到服务器";
+      if (e.message && e.message.includes("Failed to fetch")) {
+        if (location.protocol === "https:") {
+          hint = "证书未受信任。请先访问 " + location.protocol + "//" + location.host + "/cert-help 安装CA证书";
+        } else {
+          hint = "服务未启动或网络不通，请检查服务状态";
+        }
+      }
+      lastConnectivityCheck = { ok: false, time: Date.now(), error: hint };
+      return lastConnectivityCheck;
+    }
+  }
+
+  function authFetch(url, options) {
+    options = options || {};
+    options.headers = options.headers || {};
+    const token = getToken();
+    if (token) {
+      options.headers["Authorization"] = "Bearer " + token;
+    }
+    if (!options.headers["Content-Type"] && !(options.body instanceof FormData)) {
+      options.headers["Content-Type"] = "application/json";
+    }
+    return fetch(url, options).catch(e => {
+      // 增强错误信息
+      if (e.message && e.message.includes("Failed to fetch") && location.protocol === "https:") {
+        throw new Error("HTTPS证书未受信任，请安装CA证书: " + location.protocol + "//" + location.host + "/cert-help");
+      }
+      throw e;
+    });
+  }
+
+  // XSS防护：HTML转义工具函数
+  function escapeHtml(str) {
+    if (!str) return "";
+    const div = document.createElement('div');
+    div.textContent = String(str);
+    return div.innerHTML;
+  }
 
   function loadUsers() {
     try {
@@ -28,7 +109,7 @@
   }
 
   function saveUsers(map) {
-    localStorage.setItem(LS_USERS, JSON.stringify(map));
+    safeSetItem(LS_USERS, JSON.stringify(map));
   }
 
   function hashPass(pw) {
@@ -42,6 +123,14 @@
     officer: "您是 · 一线执勤警员",
     guest: "您是 · 市民访客",
   };
+
+  // 基础默认坐标（武汉），统一管理避免散落硬编码
+  const DEFAULT_CENTER_LNG = 114.305558;
+  const DEFAULT_CENTER_LAT = 30.592759;
+  const DEFAULT_FENCE_DX = 0.015;
+  const DEFAULT_FENCE_DY = 0.012;
+  const DEFAULT_AUTO_DX = 0.008;
+  const DEFAULT_AUTO_DY = 0.006;
 
   createApp({
     data() {
@@ -135,6 +224,17 @@
         mapLoaded: false,
         mapError: "",
         mapInstance: null,
+        serverOnline: null,    // 服务器连通性: null=检测中, true=在线, false=离线
+        serverHint: '',        // 连通性提示
+        toasts: [],            // Toast通知队列
+        reconnectAttempts: 0,  // WebSocket重连计数
+        reconnectTimer: null,  // 重连定时器
+        gpsWatchId: null,      // GPS持续追踪ID
+        _lastAddrUpdate: 0,    // 上次地址更新时间戳
+        useDemoData: true,     // 演示数据开关
+        selectedEventType: '', // 公众端事件类型筛选
+        publicEventsLoading: false, // 公众事件加载状态
+        confirmDialog: { show: false, title: '', message: '', onConfirm: null }, // 确认弹窗
       };
     },
     computed: {
@@ -166,13 +266,6 @@
             result += `围栏内候选警力：${resp.candidatesInFence ? resp.candidatesInFence.join(', ') : '无'}\n`;
             result += `消息：${resp.message}`;
             return result;
-          } else if (this.dispatchResult.selectedUnit) {
-            // Old format fallback
-            const unit = this.dispatchResult.selectedUnit;
-            let result = `调度结果：\n`;
-            result += `选中警力：${unit.name} (${unit.unitId})\n`;
-            result += `消息：${this.dispatchResult.message || ''}`;
-            return result;
           } else {
             return resp.message || JSON.stringify(this.dispatchResult, null, 2);
           }
@@ -194,6 +287,13 @@
       },
       canSendWs() {
         return this.ws && this.wsReadyState === 1 && !this.wsConnecting;
+      },
+      filteredPublicEvents() {
+        if (!this.selectedEventType) return this.publicEvents;
+        return this.publicEvents.filter(e => e.type === this.selectedEventType);
+      },
+      publicEventTypes() {
+        return [...new Set(this.publicEvents.map(e => e.type))];
       },
       captchaExpected() {
         return this.captchaA + this.captchaB;
@@ -271,6 +371,14 @@
         setTimeout(() => {
           this.calculateAverageRating();
         }, 1000);
+        // 页面卸载时释放Three.js资源
+        window.addEventListener('beforeunload', () => {
+          if (this.bgRendererReady) {
+            import('./three-bg.js').then(mod => mod.disposeBg());
+          }
+        });
+        // 启动时检测服务器连通性
+        this.checkServerConnection();
         this.refreshCaptcha();
         this.$nextTick(() => {
           if (
@@ -288,19 +396,58 @@
             // 自动连接WebSocket以便实时接收警员连接和下达指令
             this.toggleWs();
           }
-          // 公众端登录后加载公示事件
+          // 公众端登录后加载公示事件并自动连接WebSocket
           if (this.isLoggedIn && this.userRole === "guest") {
             this.loadPublicEvents();
+            this.toggleWs(); // BugFix: 公众端也需要自动连接WebSocket
           }
           // 警员登录后自动连接WebSocket + 初始化演示数据
           if (this.isLoggedIn && this.userRole === "officer") {
             this.toggleWs();
             this.initOfficerDemoData();
-            // 自动请求定位
+            // 自动请求定位 + 持续GPS追踪
             this.requestOfficerLocation();
+            this.startContinuousTracking();
           }
+
+          // 初始化Three.js动态科技背景
+          this.initThreeBackground();
         });
       },
+
+      // 检测服务器连通性
+      async checkServerConnection() {
+        const result = await checkConnectivity();
+        this.serverOnline = result.ok;
+        this.serverHint = result.ok ? '' : (result.error || '连接失败');
+      },
+
+      // 初始化Three.js 3D背景
+      initThreeBackground() {
+        const canvas = document.getElementById('bg-canvas');
+        if (!canvas) return;
+        import('./three-bg.js').then(mod => {
+          const ok = mod.initBgRenderer(canvas);
+          if (ok) {
+            this.bgRendererReady = true;
+            mod.startBgAnimation();
+            if (!this.isLoggedIn) {
+              mod.switchBgScene('hub');
+            } else {
+              mod.switchBgScene(this.userRole);
+            }
+          }
+        }).catch(() => {
+          document.body.classList.add('bg-fallback');
+        });
+      },
+
+      // 切换3D背景场景
+      switchBgIfReady(role) {
+        if (!this.bgRendererReady) return;
+        import('./three-bg.js').then(mod => mod.switchBgScene(role));
+      },
+
     watch: {
         dutyStatus(newStatus) {
           if (this.userRole === "officer" && this.canSendWs) {
@@ -337,15 +484,48 @@
         },
         completedEvents(newEvents) {
           localStorage.setItem('pcmp_completed_events_list', JSON.stringify(newEvents));
+        },
+        // 角色切换时切换3D背景场景
+        userRole(newRole) {
+          this.switchBgIfReady(newRole);
+        },
+        // 回到虚拟枢纽时显示hub场景
+        authStage(stage) {
+          if (stage === 'hub') this.switchBgIfReady('hub');
         }
       },
 
     methods: {
+      // Toast通知系统（替代alert）
+      showToast(message, type, duration) {
+        type = type || 'info';
+        duration = duration || 3500;
+        const id = 'toast-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+        this.toasts.push({ id, message, type });
+        setTimeout(() => {
+          this.toasts = this.toasts.filter(t => t.id !== id);
+        }, duration);
+      },
+
+      // 确认弹窗
+      confirmAction(title, message, onConfirm) {
+        this.confirmDialog = { show: true, title, message, onConfirm };
+      },
+      dismissConfirm() {
+        this.confirmDialog = { show: false, title: '', message: '', onConfirm: null };
+      },
+      executeConfirm() {
+        if (this.confirmDialog.onConfirm) {
+          this.confirmDialog.onConfirm();
+        }
+        this.dismissConfirm();
+      },
+
       loadCommanderEvents() {
         this.eventsLoading = true;
 
         // 演示基线事件（始终显示，与警员端坐标系一致）
-        const baseLng = 114.305558, baseLat = 30.592759;
+        const baseLng = DEFAULT_CENTER_LNG, baseLat = DEFAULT_CENTER_LAT;
         const demoEvents = [
           { id: "E-1001", type: "交通事故", priority: "高", status: "待处理", region: "城东大道与解放路交叉口", lng: baseLng + 0.008, lat: baseLat + 0.005 },
           { id: "E-1003", type: "求助", priority: "中", status: "待处理", region: "滨江小区3号楼", lng: baseLng + 0.004, lat: baseLat - 0.006 },
@@ -354,7 +534,7 @@
         // 保存安全隐患事件
         const safetyEvents = this.commanderEvents.filter(event => event.type === "安全隐患");
 
-        fetch("/api/commander/events")
+        authFetch("/api/commander/events")
           .then(response => {
             if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             return response.json();
@@ -428,7 +608,7 @@
             }
           })
           .catch(() => {
-            // 保持localStorage中的事件数据
+            this.showToast('公示事件加载失败，请刷新重试', 'error');
           });
       },
 
@@ -599,6 +779,12 @@
         })
         .then(data => {
           if (data.code === 200) {
+            // 保存JWT令牌
+            const respData = data.data;
+            if (respData && respData.token) {
+              setToken(respData.token);
+            }
+            // 保存会话信息
             localStorage.setItem(
               LS_SESSION,
               JSON.stringify({ username: u, role: this.pendingRole, at: Date.now() })
@@ -619,8 +805,14 @@
             this.authError = data.msg || "操作失败";
           }
         })
-        .catch(() => {
-          this.authError = "网络错误，请稍后重试";
+        .catch((err) => {
+          if (err.message && err.message.includes("证书未受信任")) {
+            this.authError = err.message;
+          } else if (err.message && err.message.includes("Failed to fetch")) {
+            this.authError = "无法连接服务器。请检查: 1)服务是否启动 2)是否使用 https:// 访问 3)CA证书是否已安装";
+          } else {
+            this.authError = "网络错误: " + (err.message || "未知错误");
+          }
         })
         .finally(() => {
           this.isProcessingAuth = false;
@@ -713,9 +905,7 @@
           const time = estimateTime(distance, u.transportMode || "步行", u.lng, u.lat, ix, iy);
           if (time < bestTime) {
             bestTime = time;
-            best = u;
-            best.distance = distance;
-            best.estimatedTime = time;
+            best = { ...u, distance, estimatedTime: time };
           }
         }
 
@@ -731,6 +921,8 @@
       },
 
       logout() {
+        this.stopContinuousTracking();
+        clearToken();
         localStorage.removeItem(LS_SESSION);
         this.isLoggedIn = false;
         this.userRole = "";
@@ -743,33 +935,37 @@
       },
 
       markVolunteer(id) {
-        alert("已上报指挥端：警员请求援助事件 " + id + "（演示）");
+        this.showToast('已上报指挥端：警员请求援助事件 ' + id, 'info');
       },
 
       submitOfficerReport() {
-        if (!(this.reportDraft.text || "").trim()) {
-          alert("请填写事件说明");
+        // BugFix: 提前捕获文本，避免在WebSocket payload构造前被清空
+        const reportText = (this.reportDraft.text || "").trim();
+        const reportType = this.reportDraft.type;
+        const reportPriority = this.reportDraft.priority;
+        if (!reportText) {
+          this.showToast("请填写事件说明", "warning");
           return;
         }
         let loc = "";
         if (this.reportDraft.useLocation && this.officerLng != null && this.officerLat != null) {
           loc = "\n位置：" + this.officerLng + ", " + this.officerLat + (this.officerAddress ? "\n" + this.officerAddress : "");
         } else if (this.reportDraft.useLocation) {
-          alert("请先点击「先获取当前位置」授权定位，或取消勾选附加位置。");
+          this.showToast("请先获取当前位置或取消勾选附加位置", "warning");
           return;
         }
 
         const data = {
-          type: this.reportDraft.type,
-          text: this.reportDraft.text,
-          priority: this.reportDraft.priority,
+          type: reportType,
+          text: reportText,
+          priority: reportPriority,
           useLocation: this.reportDraft.useLocation,
           lng: this.officerLng,
           lat: this.officerLat,
           address: this.officerAddress
         };
 
-        fetch("/api/officer/report", {
+        authFetch("/api/officer/report", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data)
@@ -780,20 +976,20 @@
         })
         .then(data => {
           if (data.code === 200) {
-            alert("事件已上报至指挥端待审核。\n类型：" + this.reportDraft.type + "\n优先级：" + this.reportDraft.priority + loc);
+            this.showToast("事件已上报至指挥端待审核", "success");
             this.reportDraft.text = "";
             // 刷新地图以显示新上报的事件
             if (this.mapLoaded && this.mapContext === "officer") {
               this.initMapForRole("officer");
             }
-            // 通知指挥端有新事件上报
+            // 通知指挥端有新事件上报（使用捕获的变量）
             if (this.canSendWs) {
               const env = {
                 type: "EVENT_REPORTED",
                 event: {
-                  type: this.reportDraft.type,
-                  priority: this.reportDraft.priority,
-                  text: this.reportDraft.text,
+                  type: reportType,
+                  priority: reportPriority,
+                  text: reportText,
                   lng: this.officerLng,
                   lat: this.officerLat,
                   address: this.officerAddress
@@ -804,22 +1000,22 @@
               this.pushWsLog('out', '已上报事件至指挥端');
             }
           } else {
-            alert("上报失败：" + (data.msg || "未知错误"));
+            this.showToast("上报失败：" + (data.msg || "未知错误"), "error");
           }
         })
-        .catch(() => {
-          alert("事件已上报至指挥端待审核（演示）。\n类型：" + this.reportDraft.type + "\n优先级：" + this.reportDraft.priority + loc);
-          this.reportDraft.text = "";
-          // 刷新地图以显示新上报的事件
-          if (this.mapLoaded && this.mapContext === "officer") {
-            this.initMapForRole("officer");
+        .catch((err) => {
+          // 区分网络错误和服务端错误，不清除用户输入
+          if (err.message && err.message.includes('HTTP 5')) {
+            this.showToast('服务器错误，请稍后重试', 'error');
+          } else {
+            this.showToast('网络错误，请检查连接（数据未丢失）', 'warning');
           }
         });
       },
 
       submitGuestFeedback() {
         if (!(this.guestFeedback.text || "").trim()) {
-          alert("请填写简要说明");
+          this.showToast("请填写简要说明", "warning");
           return;
         }
         
@@ -852,7 +1048,7 @@
           setTimeout(() => {
             this.feedbackStatus = null;
           }, 3000);
-          alert("WebSocket未连接，请先连接后再上报");
+          this.showToast("WebSocket未连接，请先连接后再上报", "error");
           return;
         }
         
@@ -876,7 +1072,7 @@
       // 提交事件反馈
       submitEventFeedback() {
         if (!this.selectedEventForFeedback || this.feedbackRating === 0) {
-          alert("请选择事件并给出评分");
+          this.showToast("请选择事件并给出评分", "warning");
           return;
         }
         
@@ -915,7 +1111,7 @@
         // 重新计算服务评分
         this.calculateAverageRating();
         
-        alert("感谢您的反馈！");
+        this.showToast("感谢您的反馈！", "success");
         
         // 清空表单
         this.selectedEventForFeedback = "";
@@ -942,8 +1138,8 @@
               priority: "低",
               status: "pending",
               region: report.vague || "未知区域",
-              lng: location ? location.lng : 114.305558 + (Math.random() * 0.02 - 0.01),
-              lat: location ? location.lat : 30.592759 + (Math.random() * 0.02 - 0.01)
+              lng: location ? location.lng : DEFAULT_CENTER_LNG + (Math.random() * 0.02 - 0.01),
+              lat: location ? location.lat : DEFAULT_CENTER_LAT + (Math.random() * 0.02 - 0.01)
             };
             
             this.commanderEvents.unshift(newEvent);
@@ -951,7 +1147,7 @@
             // 从安全隐患列表中移除
             this.safetyReports.splice(index, 1);
             
-            alert("安全隐患已审核通过，已转为低优先级事件");
+            this.showToast("安全隐患已审核通过，已转为低优先级事件", "success");
             
             // 刷新地图以显示新事件
             if (this.mapLoaded && this.mapContext === "commander") {
@@ -964,55 +1160,87 @@
       // 审核拒绝安全隐患
       rejectSafetyReport(index) {
         this.safetyReports.splice(index, 1);
-        alert("安全隐患已审核拒绝");
+        this.showToast("安全隐患已审核拒绝", "warning");
       },
 
       getCurrentLocation() {
-        if (!navigator.geolocation) {
-          alert("当前浏览器不支持定位");
+        // 方案一：优先使用高德地图 IP 定位（不需要HTTPS，不需要GPS权限）
+        if (typeof AMap !== "undefined") {
+          AMap.plugin("AMap.Geolocation", () => {
+            const geolocation = new AMap.Geolocation({
+              enableHighAccuracy: true,
+              timeout: 10000,
+              noIpLocate: 0,   // 允许IP定位作为兜底
+              noGeoLocation: 0  // 允许尝试浏览器定位
+            });
+            geolocation.getCurrentPosition((status, result) => {
+              if (status === "complete" && result && result.position) {
+                const lng = +result.position.lng.toFixed(6);
+                const lat = +result.position.lat.toFixed(6);
+                this._onLocationSuccess(lng, lat);
+                // 高德IP定位精度提示
+                if (result.type === 'ip') {
+                  this.showToast('已通过IP获取大致位置（精度约城市级），GPS定位需要安装CA证书后使用HTTPS', 'info');
+                }
+              } else {
+                // IP定位失败，提示安装证书
+                this.showToast('定位失败。请在浏览器打开 https://' + location.hostname + ':8443/cert-help 安装证书后重试', 'warning');
+              }
+            });
+          });
           return;
         }
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const lng = +pos.coords.longitude.toFixed(6);
-            const lat = +pos.coords.latitude.toFixed(6);
-            if (this.userRole === "officer") {
-              this.officerLng = lng;
-              this.officerLat = lat;
-              this.officerAddress = "正在解析地址…";
-              this.reverseGeocode(lng, lat, (addr) => {
-                this.officerAddress = addr || "已获取位置";
-              });
-              if (this.mapLoaded && this.mapContext === "officer") {
-                this.initMapForRole("officer");
-              }
-              
-              // 发送位置更新到指挥端
-              if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                const locationData = {
-                  type: "LOCATION_UPDATE",
-                  lng: lng,
-                  lat: lat
-                };
-                this.ws.send(JSON.stringify(locationData));
-                this.pushWsLog('out', '发送位置更新: ' + lng + ', ' + lat);
-              }
-              return;
-            }
-            this.dispatch.incidentLng = lng;
-            this.dispatch.incidentLat = lat;
-            this.incidentAddress = "已获取坐标（可配合地图逆地理编码解析地址）";
-            if (this.mapLoaded && this.mapContext === "commander") {
-              this.initMapForRole("commander");
-            }
-          },
-          () => {
-            this.incidentAddress = "";
-            this.officerAddress = "";
-            alert("定位失败，请检查权限或 HTTPS 环境");
-          },
-          { enableHighAccuracy: true, timeout: 15000 }
-        );
+        // 方案二：浏览器原生GPS（HTTPS环境）
+        if (navigator.geolocation && location.protocol === 'https:') {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              this._onLocationSuccess(
+                +pos.coords.longitude.toFixed(6),
+                +pos.coords.latitude.toFixed(6)
+              );
+            },
+            () => this.showToast('GPS定位失败，请允许位置权限后重试', 'warning'),
+            { enableHighAccuracy: true, timeout: 15000 }
+          );
+          return;
+        }
+        this.showToast('请先加载地图后再定位', 'warning');
+      },
+
+      _onLocationSuccess(lng, lat) {
+        if (this.userRole === "officer") {
+          this.officerLng = lng;
+          this.officerLat = lat;
+          this.officerAddress = "正在解析地址…";
+          this.reverseGeocode(lng, lat, (addr) => {
+            this.officerAddress = addr || "已获取位置";
+          });
+          if (this.mapLoaded && this.mapContext === "officer") {
+            this.initMapForRole("officer");
+          }
+          // 发送位置更新到指挥端
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({
+              type: "LOCATION_UPDATE",
+              lng: lng,
+              lat: lat
+            }));
+            this.pushWsLog('out', '发送位置更新: ' + lng + ', ' + lat);
+          }
+          return;
+        }
+        this.dispatch.incidentLng = lng;
+        this.dispatch.incidentLat = lat;
+        this.incidentAddress = "已获取坐标（可配合地图逆地理编码解析地址）";
+        if (this.mapLoaded && this.mapContext === "commander") {
+          this.initMapForRole("commander");
+        }
+      },
+
+      _onLocationError(msg) {
+        this.incidentAddress = "";
+        this.officerAddress = "";
+        this.showToast(msg, "error");
       },
 
       reverseGeocode(lng, lat, cb) {
@@ -1032,12 +1260,71 @@
         });
       },
       
-      // 警员端：自动请求浏览器定位
+      // 警员端：持续GPS追踪 (watchPosition替代getCurrentPosition)
+      startContinuousTracking() {
+        if (!navigator.geolocation) return;
+        if (this.gpsWatchId != null) { navigator.geolocation.clearWatch(this.gpsWatchId); }
+
+        let lastLng = null, lastLat = null, lastSent = 0;
+        const MIN_DISPLACEMENT_M = 10;
+        const THROTTLE_MS = 3000;
+        const self = this;
+
+        this.gpsWatchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const lng = +pos.coords.longitude.toFixed(6);
+            const lat = +pos.coords.latitude.toFixed(6);
+            self.officerLng = lng;
+            self.officerLat = lat;
+
+            let shouldSend = false;
+            if (lastLng == null) { shouldSend = true; }
+            else {
+              const dist = self.haversineKm(lastLat, lastLng, lat, lng) * 1000;
+              if (dist >= MIN_DISPLACEMENT_M) shouldSend = true;
+            }
+            const now = Date.now();
+            if (shouldSend && (now - lastSent >= THROTTLE_MS)) {
+              lastLng = lng; lastLat = lat; lastSent = now;
+              if (self.ws && self.ws.readyState === WebSocket.OPEN) {
+                self.ws.send(JSON.stringify({ type: 'LOCATION_UPDATE', lng, lat }));
+              }
+            }
+            // 每30秒更新一次地址
+            if (now - (self._lastAddrUpdate || 0) > 30000) {
+              self._lastAddrUpdate = now;
+              self.reverseGeocode(lng, lat, (addr) => { self.officerAddress = addr || ''; });
+            }
+          },
+          () => { /* GPS失败，使用默认位置 */ },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 2000 }
+        );
+      },
+
+      stopContinuousTracking() {
+        if (this.gpsWatchId != null && navigator.geolocation) {
+          navigator.geolocation.clearWatch(this.gpsWatchId);
+          this.gpsWatchId = null;
+        }
+      },
+
+      // 前端Haversine距离计算（GPS节流用）
+      haversineKm(lat1, lng1, lat2, lng2) {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLng/2) * Math.sin(dLng/2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      },
+
+      // 警员端：自动请求浏览器定位（首次定位用）
       requestOfficerLocation() {
         // 设置演示默认位置（武汉坐标），GPS成功后会覆盖
         if (this.officerLng == null || this.officerLat == null) {
-          this.officerLng = 114.305558;
-          this.officerLat = 30.592759;
+          this.officerLng = DEFAULT_CENTER_LNG;
+          this.officerLat = DEFAULT_CENTER_LAT;
         }
         if (!navigator.geolocation) return;
         navigator.geolocation.getCurrentPosition(
@@ -1059,7 +1346,7 @@
 
       // 指挥端：初始化演示数据（在线警员和警力列表）
       initCommanderDemoData() {
-        const baseLng = 114.305558, baseLat = 30.592759;
+        const baseLng = DEFAULT_CENTER_LNG, baseLat = DEFAULT_CENTER_LAT;
         // 演示在线警员（与dispatch.units同步）
         if (this.connectedOfficers.length === 0) {
           this.connectedOfficers = [
@@ -1092,8 +1379,8 @@
 
       // 警员端：初始化演示数据（任务/周边警情/可援助事件）
       initOfficerDemoData() {
-        const baseLng = 114.305558;
-        const baseLat = 30.592759;
+        const baseLng = DEFAULT_CENTER_LNG;
+        const baseLat = DEFAULT_CENTER_LAT;
 
         // 演示指挥任务（只有当前officerOrders为空时才填充，避免覆盖真实WebSocket指令）
         if (this.officerOrders.length === 0) {
@@ -1201,8 +1488,8 @@
       addFenceVertex() {
         const last = this.dispatch.fenceVertices[this.dispatch.fenceVertices.length - 1];
         this.dispatch.fenceVertices.push({
-          lng: last ? last.lng : this.dispatch.eventLng || 114.305558,
-          lat: last ? last.lat : this.dispatch.eventLat || 30.592759,
+          lng: last ? last.lng : this.dispatch.incidentLng || DEFAULT_CENTER_LNG,
+          lat: last ? last.lat : this.dispatch.incidentLat || DEFAULT_CENTER_LAT,
         });
       },
       autoGenerateFence() {
@@ -1727,8 +2014,8 @@
         return false;
       },
       resetFence() {
-        const cLng = this.dispatch.eventLng || 114.305558;
-        const cLat = this.dispatch.eventLat || 30.592759;
+        const cLng = this.dispatch.incidentLng || DEFAULT_CENTER_LNG;
+        const cLat = this.dispatch.incidentLat || DEFAULT_CENTER_LAT;
         const dx = 0.015, dy = 0.012;
         this.dispatch.fenceVertices = [
           { lng: cLng - dx, lat: cLat - dy },
@@ -1744,7 +2031,7 @@
         const gen = this.mapGeneration || 0;
         try {
           const url = `/api/fence/dynamic-polygon?lng=${event.lng}&lat=${event.lat}`;
-          const res = await fetch(url);
+          const res = await authFetch(url);
           if (!res.ok) throw new Error(`围栏接口请求失败: HTTP ${res.status}`);
           const data = await res.json();
           
@@ -1814,8 +2101,7 @@
             }
           });
           
-          console.log(`[三层围栏] 事件${index+1} "${event.type}" 已渲染 ${data.layers.length} 层围栏`, 
-            data.factorDetails || {});
+          if (DEBUG) console.log(`[三层围栏] 事件${index+1} ${event.type} ${data.layers.length}层`);
           
         } catch (e) {
           console.warn('[三层围栏] API调用失败，使用本地fallback', e);
@@ -1879,51 +2165,6 @@
         });
       },
 
-      // 多八度地形噪声（前端版，与后端算法保持一致）
-      multiOctaveNoise(lng, lat) {
-        let noise = 0;
-        let amp = 0.5, freq = 1.0;
-        for (let oct = 0; oct < 3; oct++) {
-          const nx = lng * freq * 800, ny = lat * freq * 1000;
-          noise += amp * this.simplex2D(nx, ny);
-          freq *= 2; amp *= 0.5;
-        }
-        return 0.6 + (noise + 0.8) / 1.6 * 0.9;
-      },
-
-      simplex2D(x, y) {
-        const ix = Math.floor(x), iy = Math.floor(y);
-        const fx = x - ix, fy = y - iy;
-        const sx = fx * fx * (3 - 2 * fx);
-        const sy = fy * fy * (3 - 2 * fy);
-        const hc = (a, b) => { let n = a * 15731 + b * 789221; n = (n ^ (n >>> 13)) * 0x5bd1e995; n = n ^ (n >>> 15); return (n & 0x7fffffff) / 0x7fffffff * 2 - 1; };
-        const n00 = hc(ix, iy), n10 = hc(ix + 1, iy), n01 = hc(ix, iy + 1), n11 = hc(ix + 1, iy + 1);
-        const nx0 = n00 + sx * (n10 - n00), nx1 = n01 + sx * (n11 - n01);
-        return nx0 + sy * (nx1 - nx0);
-      },
-
-      gaussianSmooth1D(data, sigma) {
-        const n = data.length;
-        if (n <= 2) return [...data];
-        const kr = Math.max(1, Math.floor(sigma * 3));
-        const kernel = [];
-        let ksum = 0;
-        for (let i = -kr; i <= kr; i++) {
-          const v = Math.exp(-(i * i) / (2 * sigma * sigma));
-          kernel.push(v);
-          ksum += v;
-        }
-        for (let i = 0; i < kernel.length; i++) kernel[i] /= ksum;
-        return data.map((_, i) => {
-          let sum = 0;
-          for (let j = -kr; j <= kr; j++) {
-            const idx = (i + j + n) % n;
-            sum += data[idx] * kernel[j + kr];
-          }
-          return sum;
-        });
-      },
-
       // 确定性哈希
       hashCoord(lng, lat) {
         const a = Math.round(lng * 10000);
@@ -1950,8 +2191,8 @@
         });
       },
       loadDemoDispatch() {
-        this.dispatch.incidentLng = 114.305558;
-        this.dispatch.incidentLat = 30.592759;
+        this.dispatch.incidentLng = DEFAULT_CENTER_LNG;
+        this.dispatch.incidentLat = DEFAULT_CENTER_LAT;
         this.incidentAddress = "";
         this.autoGenerateFence();
         this.dispatch.units = [
@@ -1980,7 +2221,7 @@
           })),
         };
         try {
-          const res = await fetch("/api/dispatch/nearest", {
+          const res = await authFetch("/api/dispatch/nearest", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
@@ -2009,8 +2250,40 @@
       },
 
       wsUrl() {
+        // HTTPS→wss, 自动检测服务器地址（支持局域网多设备访问）
         const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        return proto + "//" + location.host + "/ws/command";
+        let url = proto + "//" + location.host + "/ws/command";
+        const token = getToken();
+        if (token) { url += "?token=" + encodeURIComponent(token); }
+        return url;
+      },
+
+      // 获取服务器基础URL（支持局域网访问自动检测）
+      serverBaseUrl() {
+        return location.protocol + "//" + location.host;
+      },
+
+      // 检查是否HTTPS（定位功能需要）
+      isSecureContext() {
+        return location.protocol === "https:" || window.isSecureContext;
+      },
+
+      // WebSocket自动重连（指数退避）
+      scheduleReconnect() {
+        if (this.reconnectAttempts >= 10) {
+          this.pushWsLog('in', '[reconnect] 已达最大重连次数(10)，停止重连');
+          return;
+        }
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        this.pushWsLog('in', '[reconnect] ' + (delay/1000) + 's后重连 (第' + (this.reconnectAttempts + 1) + '次)');
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectAttempts++;
+          this.toggleWs();
+        }, delay);
+      },
+      resetReconnect() {
+        this.reconnectAttempts = 0;
+        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
       },
 
       toggleWs() {
@@ -2030,6 +2303,7 @@
         socket.onopen = () => {
           this.wsConnecting = false;
           this.wsReadyState = 1;
+          this.resetReconnect();
           this.pushWsLog("in", "[open] " + this.wsUrl());
           // 警员端连接成功后自动发送连接请求
           if (this.userRole === "officer") {
@@ -2043,6 +2317,10 @@
           this.wsReadyState = 3;
           this.pushWsLog("in", "[close] code=" + ev.code);
           if (this.ws === socket) this.ws = null;
+          // 自动重连(指挥官和警员角色)
+          if ((this.userRole === "commander" || this.userRole === "officer") && ev.code !== 1000) {
+            this.scheduleReconnect();
+          }
         };
         socket.onerror = () => {
           this.wsConnecting = false;
@@ -2058,16 +2336,12 @@
             if (json.type === "CONNECTION_REQUEST") {
               // 指挥端接收到连接请求 → 自动接受
               if (this.userRole === "commander") {
-                console.log('Received CONNECTION_REQUEST:', json);
-                this.connectionRequests.push({
-                  sessionId: json.sessionId,
-                  role: json.role,
-                  unitId: json.unitId,
-                  name: json.name
-                });
                 // 自动接受连接请求
                 this.handleConnectionRequest(json.sessionId, true, '自动接受');
-                console.log('Auto-accepted connection request from:', json.name);
+                // BugFix: 自动接受后立即从请求列表移除，避免残留手动按钮
+                this.connectionRequests = this.connectionRequests.filter(
+                  req => req.sessionId !== json.sessionId
+                );
               }
             } else if (json.type === "CONNECT_RESPONSE") {
               // 警务端接收到连接响应
@@ -2080,14 +2354,12 @@
             } else if (json.type === "CONNECT_RESPONSE_BROADCAST") {
               // 指挥端接收到连接响应广播
               if (this.userRole === "commander") {
-                console.log('Received CONNECT_RESPONSE_BROADCAST:', json);
-                console.log('Current connectionRequests:', this.connectionRequests);
+                // CONNECT_RESPONSE_BROADCAST received
                 // 从连接请求列表中移除已处理的请求
                 this.connectionRequests = this.connectionRequests.filter(req => {
-                  console.log('Comparing req.sessionId:', req.sessionId, 'with json.targetSessionId:', json.targetSessionId);
+                    // 从请求列表移除
                   return req.sessionId !== json.targetSessionId;
                 });
-                console.log('Updated connectionRequests:', this.connectionRequests);
                 // 清空当前连接状态
                 this.pendingConnection = null;
               }
@@ -2105,8 +2377,8 @@
                   available: true,
                   status: officer.status || '执勤中',
                   transportMode: officer.transportMode || '步行',
-                  lng: officer.lng || 114.305558 + (index * 0.001),
-                  lat: officer.lat || 30.592759 + (index * 0.001)
+                  lng: officer.lng || DEFAULT_CENTER_LNG + (index * 0.001),
+                  lat: officer.lat || DEFAULT_CENTER_LAT + (index * 0.001)
                 }));
               }
             } else if (json.type === "CONNECTION_CLOSED") {
@@ -2121,8 +2393,8 @@
                   available: true,
                   status: officer.status || '执勤中',
                   transportMode: officer.transportMode || '步行',
-                  lng: officer.lng || 114.305558 + (index * 0.001),
-                  lat: officer.lat || 30.592759 + (index * 0.001)
+                  lng: officer.lng || DEFAULT_CENTER_LNG + (index * 0.001),
+                  lat: officer.lat || DEFAULT_CENTER_LAT + (index * 0.001)
                 }));
               }
             } else if (json.type === "STATUS_UPDATE") {
@@ -2141,6 +2413,20 @@
                 const lat = json.lat;
                 this.handleLocationUpdate(sessionId, lng, lat);
                 this.pushWsLog('in', '警员位置更新: ' + lng + ', ' + lat);
+              }
+            } else if (json.type === "COMMAND_STATUS_UPDATE") {
+              // 指令状态推进通知
+              const orderId = json.orderId;
+              const status = json.status;
+              const officerName = json.officerName;
+              if (this.userRole === "commander") {
+                this.pushWsLog('in', officerName + ' 指令状态: ' + status);
+                // 更新事件状态
+                const event = this.commanderEvents.find(e => e.assignedOrderId === orderId);
+                if (event) { event.orderStatus = status; }
+              } else if (this.userRole === "officer") {
+                const order = this.officerOrders.find(o => o.id === orderId);
+                if (order) { order.status = status; }
               }
             } else if (json.type === "TRANSPORT_MODE_UPDATE") {
               // 指挥端接收到警员交通方式更新
@@ -2166,8 +2452,7 @@
                   const beforeCount = this.commanderEvents.length;
                   this.commanderEvents = this.commanderEvents.filter(event => event.id !== eventId);
                   const afterCount = this.commanderEvents.length;
-                  console.log('任务完成 - 事件ID:', eventId, '移除前数量:', beforeCount, '移除后数量:', afterCount);
-                  console.log('当前事件列表:', this.commanderEvents.map(e => e.id));
+                  if (DEBUG) console.log('任务完成:', eventId, '移除:', beforeCount, '→', afterCount);
                   
                   // 保存到已完成事件列表
                   if (!this.completedEventIds.includes(eventId)) {
@@ -2184,7 +2469,7 @@
                 // 添加到已完成事件列表
                 if (completedEvent) {
                   this.completedEvents.push(completedEvent);
-                  console.log('指挥端接收到任务完成通知，已添加到已完成事件列表:', completedEvent);
+                  if (DEBUG) console.log('指挥端任务完成:', completedEvent.id);
                 }
               } else if (this.userRole === "guest") {
                 // 公众端接收到任务完成通知
@@ -2192,7 +2477,7 @@
                 if (completedEvent) {
                   // 添加到已完成事件列表
                   this.completedEvents.push(completedEvent);
-                  console.log('公众端接收到任务完成通知，已添加到已完成事件列表:', completedEvent);
+                  if (DEBUG) console.log('公众端任务完成:', completedEvent.id);
                 }
               }
             } else if (json.type === "EVENT_REPORTED") {
@@ -2273,7 +2558,7 @@
                     if (this.officerLng && this.officerLat) {
                       this.showRoutePlan(order.title, order.address || order.place, order.lng, order.lat);
                     } else {
-                      alert("请先获取当前位置，以便规划路线");
+                      this.showToast("请先获取当前位置，以便规划路线", "warning");
                     }
                   }
                 }
@@ -2318,7 +2603,7 @@
               }
             }
           } catch (e) {
-            console.warn('[ws.onmessage] 消息解析失败:', e.message, '原始数据:', event.data.substring(0, 200));
+            console.warn('[ws.onmessage] 消息解析失败:', e.message, '原始数据:', ev.data.substring(0, 200));
           }
         };
       },
@@ -2578,7 +2863,7 @@
                     `;
                   }
                   
-                  console.log(`[路线规划] 距离:${distance}km 时间:${durationMin}分钟 路况:${overallTraffic} 红绿灯:${trafficLightCount} 拥堵:${(jamDistance/1000).toFixed(1)}km`);
+                  if (DEBUG) console.log(`[路线] ${distance}km ${durationMin}min traffic:${overallTraffic}`);
                 } else {
                   console.error('路线规划失败', result);
                   if (infoPanel) {
@@ -2607,11 +2892,15 @@
 
       sendWs() {
         if (!this.canSendWs) return;
+        const msgType = this.currentChatTarget ? "PRIVATE_MESSAGE" : (this.wsForm.type || "MESSAGE");
         const env = {
-          type: this.wsForm.type || "MESSAGE",
+          type: msgType,
           payloadPlain: this.wsForm.payloadPlain || "",
           role: this.userRole
         };
+        if (this.currentChatTarget) {
+          env.targetSessionId = this.currentChatTarget.sessionId;
+        }
         const raw = JSON.stringify(env);
         this.ws.send(raw);
         this.pushWsLog("out", raw);
@@ -2666,7 +2955,7 @@
 
       issueCommand(event) {
         if (!this.canSendWs) {
-          alert('WebSocket未连接，请先连接');
+          this.showToast('WebSocket未连接，请先连接', 'error');
           return;
         }
 
@@ -2679,7 +2968,7 @@
             targetOfficer = this.connectedOfficers[0];
           }
           if (!targetOfficer) {
-            alert('没有可用的在线警员，请等待警员连接');
+            this.showToast('没有可用的在线警员，请等待警员连接', 'warning');
             return;
           }
           // 自动设置为当前对话目标，方便后续沟通
@@ -2726,14 +3015,14 @@
 
       autoAssignEvents() {
         if (!this.canSendWs) {
-          alert('WebSocket未连接，请先连接');
+          this.showToast('WebSocket未连接，请先连接', 'error');
           return;
         }
 
         // 筛选空闲警员（执勤中状态）
         const availableOfficers = this.connectedOfficers.filter(officer => officer.status === '执勤中');
         if (availableOfficers.length === 0) {
-          alert('没有可用的空闲警员，请等待警员连接并设为执勤中状态');
+          this.showToast('没有可用的空闲警员，请等待警员连接并设为执勤中状态', 'warning');
           return;
         }
 
@@ -2744,8 +3033,8 @@
           available: true,
           status: officer.status,
           transportMode: officer.transportMode || '步行',
-          lng: officer.lng || 114.305558,
-          lat: officer.lat || 30.592759,
+          lng: officer.lng || DEFAULT_CENTER_LNG,
+          lat: officer.lat || DEFAULT_CENTER_LAT,
           sessionId: officer.sessionId
         }));
 
@@ -2806,7 +3095,7 @@
                 if (this.canSendWs) {
                   this.ws.send(raw);
                 } else {
-                  console.warn('[autoAssign] WebSocket 已断开，跳过后台指令发送');
+                  if (DEBUG) console.warn('[autoAssign] WS断连');
                   break;
                 }
 
@@ -2832,7 +3121,7 @@
         }
 
         if (assignedCount > 0) {
-          alert(`已自动分配${assignedCount}个事件给空闲警员`);
+          this.showToast(`已自动分配${assignedCount}个事件给空闲警员`, 'success');
 
           // 重新加载地图以显示最新状态
           if (this.mapLoaded && this.mapContext === "commander") {
@@ -2841,11 +3130,11 @@
         } else {
           const total = this.commanderEvents.length;
           if (total === 0) {
-            alert('当前无任何事件，请先加载或创建事件');
+            this.showToast('当前无任何事件，请先加载或创建事件', 'info');
           } else if (pendingCount === 0) {
-            alert(`当前${total}个事件均非待处理状态（可能已全部指派或完成）`);
+            this.showToast(`当前${total}个事件均非待处理状态`, 'info');
           } else {
-            alert(`有${pendingCount}个待处理事件，但无法找到合适的警员（可能是围栏范围不覆盖或警员不可用）`);
+            this.showToast(`有${pendingCount}个待处理事件，但围栏内无可用警员`, 'warning');
           }
         }
       },
@@ -2890,6 +3179,32 @@
       },
       
       // 完成任务
+      // 6步指令状态推进
+      getStatusIndex(status) {
+        const steps = ['已指派', '已接收', '前往中', '已到达', '处置中', '已完成'];
+        return steps.indexOf(status || '已指派');
+      },
+      updateOrderStatus(orderId, newStatus) {
+        const order = this.officerOrders.find(o => o.id === orderId);
+        if (!order) return;
+        order.status = newStatus;
+        this.pushWsLog('out', '指令状态更新: ' + orderId + ' → ' + newStatus);
+
+        if (this.canSendWs) {
+          this.ws.send(JSON.stringify({
+            type: 'COMMAND_STATUS_UPDATE',
+            orderId: orderId,
+            status: newStatus
+          }));
+        }
+
+        if (newStatus === '已完成') {
+          this.completeOrder(orderId);
+        } else if (this.mapLoaded && this.mapContext === 'officer') {
+          this.initMapForRole('officer');
+        }
+      },
+
       completeOrder(orderId) {
         const index = this.officerOrders.findIndex(order => order.id === orderId);
         if (index !== -1) {
@@ -2922,25 +3237,12 @@
             }
           }
           
-          // 确保事件ID的唯一性
-          let eventId = order.eventId;
-          if (!eventId) {
-            // 生成新的唯一事件ID
-            let newId;
-            do {
-              newId = 'E-' + String(Math.floor(Math.random() * 10000)).padStart(4, '0');
-            } while (this.completedEvents.some(e => e.id === newId));
-            eventId = newId;
-          } else {
-            // 检查事件ID是否已存在，如果存在则生成新的唯一ID
-            while (this.completedEvents.some(e => e.id === eventId)) {
-              eventId = 'E-' + String(Math.floor(Math.random() * 10000)).padStart(4, '0');
-            }
-          }
-          
-          // 将任务添加到已完成事件列表
+          // BugFix: 使用原始eventId发送TASK_COMPLETED，确保指挥官能正确过滤事件
+          const originalEventId = order.eventId;
+          const completedEventId = originalEventId || ('E-COMP-' + orderId);
+
           const completedEvent = {
-            id: eventId,
+            id: completedEventId,
             type: order.eventType || order.title.replace('处置', ''),
             region: order.place,
             officerName: officerName,
@@ -2955,7 +3257,7 @@
               type: "TASK_COMPLETED",
               orderId: orderId,
               orderTitle: order.title,
-              eventId: eventId,
+              eventId: originalEventId,  // 使用原始eventId确保指挥官端正确过滤
               completedEvent: completedEvent
             };
             const raw = JSON.stringify(env);
@@ -2980,35 +3282,35 @@
         // 获取当前警员的所有反馈
         let officerFeedbacks;
         
-        console.log('计算评分 - 当前警员:', this.officerName, this.officerId);
-        console.log('所有反馈:', this.eventFeedbacks);
+        if (DEBUG) console.log('计算评分:', this.officerName);
+        // 反馈调试信息
         
         // 优先根据officerName过滤，因为officerId可能是随机生成的
         officerFeedbacks = this.eventFeedbacks.filter(feedback => feedback.officerName === this.officerName);
-        console.log('根据officerName过滤后的反馈:', officerFeedbacks);
+        if (DEBUG) console.log('officerName过滤:', officerFeedbacks.length);
         
         // 如果没有匹配的officerName，根据officerId过滤
         if (officerFeedbacks.length === 0) {
           officerFeedbacks = this.eventFeedbacks.filter(feedback => feedback.officerId === this.officerId);
-          console.log('根据officerId过滤后的反馈:', officerFeedbacks);
+          if (DEBUG) console.log('officerId过滤后:', officerFeedbacks.length);
         }
         
         // 如果仍然没有匹配的，使用所有反馈计算平均分
         if (officerFeedbacks.length === 0) {
           officerFeedbacks = this.eventFeedbacks;
-          console.log('使用所有反馈计算平均分:', officerFeedbacks);
+          if (DEBUG) console.log('使用所有反馈计算平均分');
         }
         
         if (officerFeedbacks.length === 0) {
           this.averageRating = 0;
-          console.log('没有反馈，评分为0');
+          // 无反馈
           return;
         }
         
         // 计算平均分
         const totalRating = officerFeedbacks.reduce((sum, feedback) => sum + feedback.rating, 0);
         this.averageRating = totalRating / officerFeedbacks.length;
-        console.log('计算出的平均分:', this.averageRating);
+        if (DEBUG) console.log('平均分:', this.averageRating);
       },
       
       // 获取指定警员的服务评分
@@ -3124,7 +3426,7 @@
             // 使用默认坐标作为中心点，如果没有设置事发点坐标
             const center = this.dispatch.incidentLng && this.dispatch.incidentLat ? 
               [this.dispatch.incidentLng, this.dispatch.incidentLat] : 
-              [114.305558, 30.592759];
+              [DEFAULT_CENTER_LNG, DEFAULT_CENTER_LAT];
             this.mapInstance = new AMap.Map(elId, {
               zoom: role === "commander" ? 13 : 14,
               center,
@@ -3347,7 +3649,7 @@
               (status, result) => {
                 if (status === 'complete' && result.routes && result.routes[0]) {
                   const route = result.routes[0];
-                  console.log('[Driving route keys]', Object.keys(route), 'duration=', route.duration, 'time=', route.time, 'cost=', route.cost);
+                  if (DEBUG) console.log('[Driving]', Object.keys(route).join(','));
 
                   // 安全获取距离（米→公里）
                   const rawDist = Number(route.distance ?? 0);
@@ -3532,18 +3834,45 @@
         if (officer) {
           officer.lng = lng;
           officer.lat = lat;
-          
+
           // 同时更新dispatch.units数组中的警力位置
           const unitIndex = this.dispatch.units.findIndex(unit => unit.unitId === officer.unitId);
           if (unitIndex !== -1) {
             this.dispatch.units[unitIndex].lng = lng;
             this.dispatch.units[unitIndex].lat = lat;
           }
-          
-          // 刷新地图以显示更新后的警员位置
-          if (this.mapLoaded && this.mapContext === "commander") {
-            this.initMapForRole("commander");
+
+          // BugFix: 仅增量更新标记位置，不销毁重建整个地图
+          if (this.mapLoaded && this.mapContext === "commander" && this.mapInstance) {
+            this.updateOfficerMarker(sessionId, lng, lat, officer.name || officer.unitId);
           }
+        }
+      },
+
+      // 增量更新警员地图标记，避免销毁重建地图
+      updateOfficerMarker(sessionId, lng, lat, label) {
+        if (!this.mapInstance) return;
+
+        // 检查标记是否已存在
+        const existingMarker = this.mapMarkers.find(m => m._officerSessionId === sessionId);
+        if (existingMarker) {
+          // 移动已有标记
+          existingMarker.setPosition([lng, lat]);
+        } else {
+          // 创建新标记（首次出现）
+          const marker = new AMap.Marker({
+            position: [lng, lat],
+            title: label,
+            icon: new AMap.Icon({
+              size: new AMap.Size(24, 24),
+              image: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b' + (this.mapMarkers.filter(m => m._officerSessionId).length + 1) + '.png',
+              imageSize: new AMap.Size(24, 24)
+            }),
+            offset: new AMap.Pixel(-12, -12)
+          });
+          marker._officerSessionId = sessionId;
+          marker.setMap(this.mapInstance);
+          this.mapMarkers.push(marker);
         }
       },
     },
