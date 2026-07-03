@@ -35,6 +35,12 @@ reference_unpacked/
 # WorkBuddy project data
 .workbuddy/
 
+# Documentation & presentations (code only repo)
+*.pptx
+*.pdf
+README.md
+LICENSE
+
 # Temporary scripts
 check_ppt.py
 check_ppt2.py
