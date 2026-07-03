@@ -28,6 +28,8 @@ public class WebSocketAuthInterceptor implements HandshakeInterceptor {
     @Override
     public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response,
                                    WebSocketHandler wsHandler, Map<String, Object> attributes) {
+        log.info("WebSocket handshake request: URI={}, Origin={}", request.getURI(),
+                request.getHeaders().getOrigin());
         // 提取token参数
         String token = null;
         if (request instanceof ServletServerHttpRequest servletRequest) {
@@ -46,8 +48,14 @@ public class WebSocketAuthInterceptor implements HandshakeInterceptor {
             }
         }
 
-        if (token == null || !jwtTokenProvider.validateToken(token)) {
-            log.warn("WebSocket handshake rejected: invalid or missing token");
+        if (token == null) {
+            log.warn("WebSocket handshake rejected: token missing, URI={}", request.getURI());
+            return false;
+        }
+        if (!jwtTokenProvider.validateToken(token)) {
+            log.warn("WebSocket handshake rejected: invalid token, token_preview={}, URI={}",
+                    token.length() > 20 ? token.substring(0, 20) + "..." : token,
+                    request.getURI());
             return false;
         }
 

@@ -14,4 +14,9 @@ public interface UserService {
      * @return 包含user、token字段的Map，失败返回null
      */
     Map<String, Object> loginWithToken(String username, String password);
+
+    /**
+     * 为匿名访客生成受限JWT令牌（公众端使用）
+     */
+    String generateGuestToken();
 }

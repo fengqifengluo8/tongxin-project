@@ -7,6 +7,6 @@ subjectAltName = @alt_names
 [alt_names]
 DNS.1 = localhost
 DNS.2 = *.tongxin.local
-DNS.3 = LAPTOP-167V8G48
+DNS.3 = YOUR_HOSTNAME
 IP.1 = 127.0.0.1
-IP.2 = 192.168.135.1
+IP.2 = YOUR_LAN_IP

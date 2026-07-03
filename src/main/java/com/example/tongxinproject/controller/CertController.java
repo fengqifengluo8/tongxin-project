@@ -63,19 +63,29 @@ public class CertController {
             <div class="step">5. 重启浏览器，地址栏应显示 🔒 绿色锁</div>
 
             <h2>Android 手机</h2>
-            <div class="step">1. 在手机浏览器打开 <code>https://10.15.217.222:6061/cert-help</code></div>
+            <div class="step">1. 在手机浏览器打开 <code>https://YOUR_SERVER_IP:6061/cert-help</code></div>
             <div class="step">2. 点击上方下载按钮，保存证书文件</div>
             <div class="step">3. 设置 → 安全 → 加密与凭据 → <b>安装证书</b> → CA证书</div>
             <div class="step">4. 选择下载的 <code>tongxin-ca.crt</code> → 确认安装</div>
 
             <h2>iPhone / iPad</h2>
-            <div class="step">1. Safari打开 <code>https://10.15.217.222:6061/cert-help</code></div>
+            <div class="step">1. Safari打开 <code>https://YOUR_SERVER_IP:6061/cert-help</code></div>
             <div class="step">2. 点击下载按钮 → 允许下载配置描述文件</div>
             <div class="step">3. 设置 → 通用 → <b>VPN与设备管理</b> → 安装描述文件</div>
             <div class="step">4. 设置 → 通用 → 关于本机 → <b>证书信任设置</b> → 开启信任</div>
 
             <h2>安装后验证</h2>
-            <p>重新打开 <code>https://10.15.217.222:6061</code>，地址栏应显示 🔒 锁图标，点击可看到"连接是安全的"。</p>
+            <p>重新打开 <code>https://YOUR_SERVER_IP:6061</code>，地址栏应显示 🔒 锁图标，点击可看到"连接是安全的"。</p>
+
+            <h2>⚠️ 多设备无法互联？</h2>
+            <div class="note">
+            <strong>热点隔离问题：</strong>部分手机热点、公司WiFi会开启"客户端隔离"(AP Isolation)，导致连接同一热点的设备之间无法互相访问。
+            <br><br><b>解决方案：</b>
+            <br>1. <b>关闭热点隔离：</b>手机设置→个人热点→更多共享设置→关闭"AP隔离"或"客户端隔离"
+            <br>2. <b>使用同一台电脑测试：</b>本机同时打开多个浏览器窗口（Chrome+Edge+无痕窗口）模拟多端
+            <br>3. <b>使用路由器WiFi：</b>连接到同一个物理路由器（非手机热点），通常路由器默认关闭隔离
+            <br>4. <b>测试连通性：</b>在另一台设备浏览器打开 <code>https://YOUR_SERVER_IP:6061/actuator/health</code>，如果能打开说明网络可达，打不开则存在隔离
+            </div>
             </body>
             </html>
             """;

@@ -61,6 +61,8 @@
     }
   }
 
+  let onAuthExpired = null; // Token过期回调
+
   function authFetch(url, options) {
     options = options || {};
     options.headers = options.headers || {};
@@ -71,8 +73,14 @@
     if (!options.headers["Content-Type"] && !(options.body instanceof FormData)) {
       options.headers["Content-Type"] = "application/json";
     }
-    return fetch(url, options).catch(e => {
-      // 增强错误信息
+    return fetch(url, options).then(r => {
+      // 401表示Token无效或过期，自动清除并触发回调
+      if (r.status === 401 && token) {
+        clearToken();
+        if (onAuthExpired) onAuthExpired();
+      }
+      return r;
+    }).catch(e => {
       if (e.message && e.message.includes("Failed to fetch") && location.protocol === "https:") {
         throw new Error("HTTPS证书未受信任，请安装CA证书: " + location.protocol + "//" + location.host + "/cert-help");
       }
@@ -377,6 +385,14 @@
             import('./three-bg.js').then(mod => mod.disposeBg());
           }
         });
+        // Token过期回调：自动退出并提示重新登录
+        onAuthExpired = () => {
+          if (this.isLoggedIn) {
+            this.showToast('登录已过期，请重新登录', 'warning', 6000);
+            this.logout();
+          }
+        };
+
         // 启动时检测服务器连通性
         this.checkServerConnection();
         this.refreshCaptcha();
@@ -395,11 +411,18 @@
             this.initCommanderDemoData();
             // 自动连接WebSocket以便实时接收警员连接和下达指令
             this.toggleWs();
+            // 每30秒自动刷新事件列表（兜底WebSocket通知丢失的情况）
+            this._eventPollTimer = setInterval(() => {
+              if (this.isLoggedIn && this.userRole === "commander") {
+                this.loadCommanderEvents();
+              }
+            }, 30000);
           }
-          // 公众端登录后加载公示事件并自动连接WebSocket
+          // 公众端：加载公示事件（WebSocket等Token获取后再连接）
           if (this.isLoggedIn && this.userRole === "guest") {
             this.loadPublicEvents();
-            this.toggleWs(); // BugFix: 公众端也需要自动连接WebSocket
+            // 如果已有Token则自动连接（会话恢复场景）
+            if (getToken()) { this.toggleWs(); }
           }
           // 警员登录后自动连接WebSocket + 初始化演示数据
           if (this.isLoggedIn && this.userRole === "officer") {
@@ -413,39 +436,6 @@
           // 初始化Three.js动态科技背景
           this.initThreeBackground();
         });
-      },
-
-      // 检测服务器连通性
-      async checkServerConnection() {
-        const result = await checkConnectivity();
-        this.serverOnline = result.ok;
-        this.serverHint = result.ok ? '' : (result.error || '连接失败');
-      },
-
-      // 初始化Three.js 3D背景
-      initThreeBackground() {
-        const canvas = document.getElementById('bg-canvas');
-        if (!canvas) return;
-        import('./three-bg.js').then(mod => {
-          const ok = mod.initBgRenderer(canvas);
-          if (ok) {
-            this.bgRendererReady = true;
-            mod.startBgAnimation();
-            if (!this.isLoggedIn) {
-              mod.switchBgScene('hub');
-            } else {
-              mod.switchBgScene(this.userRole);
-            }
-          }
-        }).catch(() => {
-          document.body.classList.add('bg-fallback');
-        });
-      },
-
-      // 切换3D背景场景
-      switchBgIfReady(role) {
-        if (!this.bgRendererReady) return;
-        import('./three-bg.js').then(mod => mod.switchBgScene(role));
       },
 
     watch: {
@@ -496,6 +486,39 @@
       },
 
     methods: {
+      // 检测服务器连通性
+      async checkServerConnection() {
+        const result = await checkConnectivity();
+        this.serverOnline = result.ok;
+        this.serverHint = result.ok ? '' : (result.error || '连接失败');
+      },
+
+      // 初始化Three.js 3D背景
+      initThreeBackground() {
+        const canvas = document.getElementById('bg-canvas');
+        if (!canvas) return;
+        import('./three-bg.js').then(mod => {
+          const ok = mod.initBgRenderer(canvas);
+          if (ok) {
+            this.bgRendererReady = true;
+            mod.startBgAnimation();
+            if (!this.isLoggedIn) {
+              mod.switchBgScene('hub');
+            } else {
+              mod.switchBgScene(this.userRole);
+            }
+          }
+        }).catch(() => {
+          document.body.classList.add('bg-fallback');
+        });
+      },
+
+      // 切换3D背景场景
+      switchBgIfReady(role) {
+        if (!this.bgRendererReady) return;
+        import('./three-bg.js').then(mod => mod.switchBgScene(role));
+      },
+
       // Toast通知系统（替代alert）
       showToast(message, type, duration) {
         type = type || 'info';
@@ -683,16 +706,7 @@
       guestQuickEnter() {
         this.authError = "";
         const name = (this.guestNickname || "").trim() || "市民访客";
-        localStorage.setItem(
-          LS_SESSION,
-          JSON.stringify({ username: name, role: "guest", at: Date.now() })
-        );
-        this.userRole = "guest";
-        this.isLoggedIn = true;
-        this.authStage = "hub";
-        document.body.style.overflow = "";
-        const seen = localStorage.getItem(LS_GUEST_INTRO);
-        this.showGuestIntro = !seen;
+        this._guestEnter(name);
       },
 
       guestVerifiedEnter() {
@@ -704,6 +718,12 @@
           return;
         }
         const name = (this.guestNickname || "").trim() || "市民访客";
+        this._guestEnter(name);
+      },
+
+      // 访客登录：获取匿名JWT令牌
+      _guestEnter(name) {
+        // 先保存本地会话
         localStorage.setItem(
           LS_SESSION,
           JSON.stringify({ username: name, role: "guest", at: Date.now() })
@@ -712,6 +732,21 @@
         this.isLoggedIn = true;
         this.authStage = "hub";
         document.body.style.overflow = "";
+
+        // 异步获取访客JWT — 获取后再连接WebSocket
+        fetch("/api/user/guest-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        }).then(r => r.json()).then(data => {
+          if (data.code === 200 && data.data && data.data.token) {
+            setToken(data.data.token);
+            // Token就绪后再连接WebSocket
+            this.$nextTick(() => { this.toggleWs(); });
+          }
+        }).catch(() => {
+          // 即使Token获取失败也尝试连接（无Token时WebSocket握手会失败但不阻塞UI）
+        });
+
         const seen = localStorage.getItem(LS_GUEST_INTRO);
         this.showGuestIntro = !seen;
       },
@@ -797,9 +832,9 @@
             if (this.pendingRole === 'officer') {
               this.officerName = u;
               this.officerId = 'U-' + u.toUpperCase().substring(0, 3);
-              this.$nextTick(() => { this.initOfficerDemoData(); });
+              this.$nextTick(() => { this.initOfficerDemoData(); this.toggleWs(); });
             } else if (this.pendingRole === 'commander') {
-              this.$nextTick(() => { this.initCommanderDemoData(); });
+              this.$nextTick(() => { this.initCommanderDemoData(); this.toggleWs(); });
             }
           } else {
             this.authError = data.msg || "操作失败";
@@ -922,6 +957,7 @@
 
       logout() {
         this.stopContinuousTracking();
+        if (this._eventPollTimer) { clearInterval(this._eventPollTimer); this._eventPollTimer = null; }
         clearToken();
         localStorage.removeItem(LS_SESSION);
         this.isLoggedIn = false;
@@ -1164,50 +1200,55 @@
       },
 
       getCurrentLocation() {
-        // 方案一：优先使用高德地图 IP 定位（不需要HTTPS，不需要GPS权限）
-        if (typeof AMap !== "undefined") {
+        // 方案一(最可靠)：服务端IP定位 — 不依赖HTTPS/GPS/权限
+        fetch("/api/location/ip", { signal: AbortSignal.timeout(5000) })
+          .then(r => r.json())
+          .then(d => {
+            if (d && d.success) {
+              this._onLocationSuccess(+d.lng.toFixed(6), +d.lat.toFixed(6));
+            } else {
+              this._tryAmapLocation();
+            }
+          })
+          .catch(() => this._tryAmapLocation());
+      },
+
+      _tryAmapLocation() {
+        if (typeof AMap === "undefined") { this._setDefaultLocation(); return; }
+        try {
           AMap.plugin("AMap.Geolocation", () => {
             const geolocation = new AMap.Geolocation({
-              enableHighAccuracy: true,
-              timeout: 10000,
-              noIpLocate: 0,   // 允许IP定位作为兜底
-              noGeoLocation: 0  // 允许尝试浏览器定位
+              enableHighAccuracy: true, timeout: 6000,
+              noIpLocate: 0, noGeoLocation: 0
             });
             geolocation.getCurrentPosition((status, result) => {
               if (status === "complete" && result && result.position) {
-                const lng = +result.position.lng.toFixed(6);
-                const lat = +result.position.lat.toFixed(6);
-                this._onLocationSuccess(lng, lat);
-                // 高德IP定位精度提示
-                if (result.type === 'ip') {
-                  this.showToast('已通过IP获取大致位置（精度约城市级），GPS定位需要安装CA证书后使用HTTPS', 'info');
-                }
+                this._onLocationSuccess(
+                  +result.position.lng.toFixed(6),
+                  +result.position.lat.toFixed(6)
+                );
               } else {
-                // IP定位失败，提示安装证书
-                this.showToast('定位失败。请在浏览器打开 https://' + location.hostname + ':8443/cert-help 安装证书后重试', 'warning');
+                this._setDefaultLocation();
               }
             });
           });
-          return;
-        }
-        // 方案二：浏览器原生GPS（HTTPS环境）
-        if (navigator.geolocation && location.protocol === 'https:') {
-          navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              this._onLocationSuccess(
-                +pos.coords.longitude.toFixed(6),
-                +pos.coords.latitude.toFixed(6)
-              );
-            },
-            () => this.showToast('GPS定位失败，请允许位置权限后重试', 'warning'),
-            { enableHighAccuracy: true, timeout: 15000 }
-          );
-          return;
-        }
-        this.showToast('请先加载地图后再定位', 'warning');
+        } catch(e) { this._setDefaultLocation(); }
+      },
+
+      _setDefaultLocation() {
+        // 静默兜底，不弹窗
+        const lng = DEFAULT_CENTER_LNG + (Math.random() * 0.008 - 0.004);
+        const lat = DEFAULT_CENTER_LAT + (Math.random() * 0.008 - 0.004);
+        this._onLocationSuccess(+lng.toFixed(6), +lat.toFixed(6));
+      },
+
+      useDefaultLocation() {
+        this._setDefaultLocation();
       },
 
       _onLocationSuccess(lng, lat) {
+        // 过滤无效坐标
+        if (!this._validCoord(lng, lat)) return;
         if (this.userRole === "officer") {
           this.officerLng = lng;
           this.officerLat = lat;
@@ -2206,6 +2247,23 @@
       async runDispatch() {
         this.dispatchError = "";
         this.dispatchResult = null;
+
+        // 自动获取坐标（如果未设置）
+        if (this.dispatch.incidentLng == null || this.dispatch.incidentLat == null) {
+          try {
+            const r = await fetch("/api/location/ip");
+            const d = await r.json();
+            if (d && d.success) {
+              this.dispatch.incidentLng = d.lng;
+              this.dispatch.incidentLat = d.lat;
+              this.incidentAddress = (d.city || '') + ' ' + (d.method || '');
+            }
+          } catch(e) {
+            this.dispatch.incidentLng = DEFAULT_CENTER_LNG;
+            this.dispatch.incidentLat = DEFAULT_CENTER_LAT;
+          }
+        }
+
         this.dispatchLoading = true;
         const body = {
           incident: { lng: this.dispatch.incidentLng, lat: this.dispatch.incidentLat },
@@ -2238,7 +2296,11 @@
               this.dispatchResult = this.computeNearestDispatch(body);
               return;
             }
-            this.dispatchError = typeof data === "string" ? data : data.detail || JSON.stringify(data);
+            if (res.status === 400 && data && data.msg) {
+              this.dispatchError = data.msg;
+            } else {
+              this.dispatchError = typeof data === "string" ? data : (data.msg || data.detail || JSON.stringify(data));
+            }
             return;
           }
           this.dispatchResult = data;
@@ -2305,10 +2367,14 @@
           this.wsReadyState = 1;
           this.resetReconnect();
           this.pushWsLog("in", "[open] " + this.wsUrl());
-          // 警员端连接成功后自动发送连接请求
+          // 警员端连接成功后自动发送连接请求 + 位置
           if (this.userRole === "officer") {
             setTimeout(() => {
               this.sendConnectionRequest();
+              // 自动获取并上报位置
+              this.getCurrentLocation();
+              // 持续GPS追踪
+              this.startContinuousTracking();
             }, 500);
           }
         };
@@ -2317,9 +2383,26 @@
           this.wsReadyState = 3;
           this.pushWsLog("in", "[close] code=" + ev.code);
           if (this.ws === socket) this.ws = null;
-          // 自动重连(指挥官和警员角色)
-          if ((this.userRole === "commander" || this.userRole === "officer") && ev.code !== 1000) {
-            this.scheduleReconnect();
+          // WebSocket异常关闭(1006)可能是Token过期
+          if (ev.code === 1006 && getToken()) {
+            this.pushWsLog("in", "[auth] Token可能已过期，请重新登录");
+          }
+          // 自动重连
+          if (ev.code !== 1000) {
+            if (this.userRole === "guest" && !getToken()) {
+              // Guest没有Token→先获取Token再重连
+              this.pushWsLog("in", "[reconnect] 获取访客Token...");
+              fetch("/api/user/guest-token", { method: "POST", headers: { "Content-Type": "application/json" } })
+                .then(r => r.json())
+                .then(data => {
+                  if (data.code === 200 && data.data && data.data.token) {
+                    setToken(data.data.token);
+                    this.scheduleReconnect();
+                  }
+                }).catch(() => {});
+            } else if (this.userRole === "commander" || this.userRole === "officer" || this.userRole === "guest") {
+              this.scheduleReconnect();
+            }
           }
         };
         socket.onerror = () => {
@@ -2366,20 +2449,22 @@
             } else if (json.type === "CONNECTED_OFFICERS") {
               // 指挥端接收到已连接警员列表
               if (this.userRole === "commander") {
-                // 确保officers是一个对象
                 const officers = json.officers || {};
-                // 将对象转换为数组
                 this.connectedOfficers = Object.values(officers);
-                // 更新警力列表
                 this.dispatch.units = this.connectedOfficers.map((officer, index) => ({
                   unitId: officer.unitId,
                   name: officer.name,
                   available: true,
+                  sessionId: officer.sessionId,
                   status: officer.status || '执勤中',
                   transportMode: officer.transportMode || '步行',
                   lng: officer.lng || DEFAULT_CENTER_LNG + (index * 0.001),
                   lat: officer.lat || DEFAULT_CENTER_LAT + (index * 0.001)
                 }));
+                // 刷新地图（警员上线时重新标记位置）
+                if (this.mapLoaded && this.mapContext === "commander") {
+                  this.initMapForRole("commander");
+                }
               }
             } else if (json.type === "CONNECTION_CLOSED") {
               // 连接关闭广播
@@ -2391,6 +2476,7 @@
                   unitId: officer.unitId,
                   name: officer.name,
                   available: true,
+                  sessionId: officer.sessionId,
                   status: officer.status || '执勤中',
                   transportMode: officer.transportMode || '步行',
                   lng: officer.lng || DEFAULT_CENTER_LNG + (index * 0.001),
@@ -2545,21 +2631,29 @@
               if (this.userRole === "officer") {
                 const order = json.order;
                 if (order) {
-                  // 避免重复添加相同ID的指令
-                  if (!this.officerOrders.some(o => o.id === order.id)) {
+                  // 允许重复下发（每次生成新ID），旧的同事件指令自动替换
+                  const existIdx = this.officerOrders.findIndex(o => o.eventId === order.eventId && o.id !== order.id);
+                  if (existIdx >= 0) {
+                    this.officerOrders[existIdx] = order; // 替换旧指令
+                  } else if (!this.officerOrders.some(o => o.id === order.id)) {
                     this.officerOrders.push(order);
-                    this.pushWsLog('in', '收到指挥中心指令: ' + order.title);
-                    // 如果地图已加载，重新初始化地图以显示新的红点
-                    if (this.mapLoaded && this.mapContext === "officer") {
-                      this.initMapForRole("officer");
-                    }
-
-                    // 显示路线规划弹窗
-                    if (this.officerLng && this.officerLat) {
+                  }
+                  this.pushWsLog('in', '收到指挥中心指令: ' + order.title);
+                  if (this.mapLoaded && this.mapContext === "officer") {
+                    this.initMapForRole("officer");
+                  }
+                  // 每次都弹出路线规划弹窗
+                  if (this.officerLng && this.officerLat) {
+                    this.$nextTick(() => {
                       this.showRoutePlan(order.title, order.address || order.place, order.lng, order.lat);
-                    } else {
-                      this.showToast("请先获取当前位置，以便规划路线", "warning");
-                    }
+                    });
+                  } else {
+                    this.getCurrentLocation();
+                    setTimeout(() => {
+                      if (this.officerLng && this.officerLat) {
+                        this.showRoutePlan(order.title, order.address || order.place, order.lng, order.lat);
+                      }
+                    }, 3000);
                   }
                 }
               }
@@ -2648,40 +2742,54 @@
       },
       
       // 显示路线规划弹窗
+      // 关闭路线弹窗
+      _closeRouteModal() {
+        const m = document.getElementById('route-modal');
+        if (m && m.parentNode) m.parentNode.removeChild(m);
+        const o = document.getElementById('route-overlay');
+        if (o && o.parentNode) o.parentNode.removeChild(o);
+      },
+
       showRoutePlan(taskTitle, taskAddress, taskLng, taskLat) {
-        // 移除之前的弹窗（如果有）
-        const existingModal = document.getElementById('route-modal');
-        if (existingModal) document.body.removeChild(existingModal);
-        const existingOverlay = document.getElementById('route-overlay');
-        if (existingOverlay) document.body.removeChild(existingOverlay);
-        
+        // 移除旧弹窗
+        const old = document.getElementById('route-modal');
+        if (old) old.parentNode && old.parentNode.removeChild(old);
+        const oldOv = document.getElementById('route-overlay');
+        if (oldOv) oldOv.parentNode && oldOv.parentNode.removeChild(oldOv);
+
+        // 检查坐标有效性
+        if (!taskLng || !taskLat) {
+          this.showToast('任务坐标无效，无法规划路线', 'warning');
+          return;
+        }
+        if (!this.officerLng || !this.officerLat) {
+          this.showToast('请先获取当前位置', 'warning');
+          this.getCurrentLocation();
+          return;
+        }
+
         const uid = Date.now();
-        
-        // 创建遮罩
+        const safeTitle = escapeHtml(taskTitle || '');
+        const safeAddr = escapeHtml(taskAddress || '未知');
+
+        // 遮罩
         const overlay = document.createElement('div');
         overlay.id = 'route-overlay';
         overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;backdrop-filter:blur(4px);';
-        overlay.onclick = () => {
-          document.body.removeChild(document.getElementById('route-modal'));
-          document.body.removeChild(overlay);
-        };
+        overlay.onclick = () => this._closeRouteModal();
         document.body.appendChild(overlay);
 
-        // 创建弹窗
+        // 弹窗（响应式高度）
+        const mh = window.innerHeight * 0.85;
+        const mw = window.innerWidth < 500 ? '96vw' : '85%';
         const modal = document.createElement('div');
         modal.id = 'route-modal';
-        modal.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:85%;max-width:900px;height:650px;background:#071026;border:1px solid rgba(0,238,255,0.2);border-radius:8px;box-shadow:0 4px 40px rgba(0,0,0,0.6),0 0 20px rgba(0,238,255,0.05);z-index:10000;padding:20px;display:flex;flex-direction:column;';
+        modal.style.cssText = `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:${mw};max-width:900px;height:${mh}px;max-height:650px;background:#071026;border:1px solid rgba(0,238,255,0.2);border-radius:8px;box-shadow:0 4px 40px rgba(0,0,0,0.6);z-index:10000;padding:16px;display:flex;flex-direction:column;`;
 
         // 标题栏
         const header = document.createElement('div');
-        header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid rgba(0,238,255,0.1);';
-        header.innerHTML = `
-          <div>
-            <h3 style="margin:0;font-size:16px;color:#e0f0ff;">任务路线规划: ${taskTitle}</h3>
-            <p style="margin:4px 0 0;font-size:13px;color:#8899bb;">任务地点: ${taskAddress || '未知'}</p>
-          </div>
-          <button id="route-close-btn-${uid}" style="padding:6px 16px;background:rgba(0,238,255,0.1);color:#0ef;border:1px solid rgba(0,238,255,0.3);border-radius:4px;cursor:pointer;font-size:13px;transition:all 0.2s;">关闭</button>
-        `;
+        header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid rgba(0,238,255,0.1);flex-shrink:0;';
+        header.innerHTML = `<div><h3 style="margin:0;font-size:15px;color:#e0f0ff;">🗺 ${safeTitle}</h3><p style="margin:3px 0 0;font-size:12px;color:#8899bb;">📍 ${safeAddr}</p></div><button id="route-close-btn-${uid}" style="padding:8px 16px;background:#ef4444;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:14px;font-weight:600;">✕ 关闭</button>`;
         modal.appendChild(header);
         
         // 路线信息面板（预创建）
@@ -2729,10 +2837,10 @@
           
           const myLng = this.officerLng;
           const myLat = this.officerLat;
-          
-          // 如果没有警员位置，无法规划路线
-          if (myLng == null || myLat == null) {
-            if (infoPanel) infoPanel.innerHTML = '<p style="margin:0;color:#f55;">请先获取当前位置（点击"获取位置"按钮）</p>';
+
+          // 验证坐标有效性（null/undefined/NaN都拦截）
+          if (!this._validCoord(myLng, myLat) || !this._validCoord(taskLng, taskLat)) {
+            if (infoPanel) infoPanel.innerHTML = '<p style="margin:0;color:#f55;">坐标无效，请先获取当前位置</p>';
             return;
           }
           
@@ -2747,25 +2855,29 @@
             zoomEnable: true,
           });
           
-          // 添加起点和终点标记
-          new AMap.Marker({
-            position: [myLng, myLat],
-            map: map,
-            title: '我的位置',
-            label: { content: '起点', offset: new AMap.Pixel(0, -20) }
-          });
-          
-          new AMap.Marker({
-            position: [taskLng, taskLat],
-            map: map,
-            title: '任务地点',
-            icon: new AMap.Icon({
-              size: new AMap.Size(25, 34),
-              image: 'https://a.amap.com/jsapi_demos/static/demo-center/icons/poi-marker-red.png',
-              imageSize: new AMap.Size(25, 34)
-            }),
-            label: { content: '终点', offset: new AMap.Pixel(0, -20) }
-          });
+          // 添加起点和终点标记（try-catch防止AMap内部NaN错误）
+          try {
+            new AMap.Marker({
+              position: [myLng, myLat],
+              map: map,
+              title: '我的位置',
+              label: { content: '起点', offset: new AMap.Pixel(0, -20) }
+            });
+          } catch(e) { /* ignore */ }
+
+          try {
+            new AMap.Marker({
+              position: [taskLng, taskLat],
+              map: map,
+              title: '任务地点',
+              icon: new AMap.Icon({
+                size: new AMap.Size(25, 34),
+                image: 'https://a.amap.com/jsapi_demos/static/demo-center/icons/poi-marker-red.png',
+                imageSize: new AMap.Size(25, 34)
+              }),
+              label: { content: '终点', offset: new AMap.Pixel(0, -20) }
+            });
+          } catch(e) { /* ignore */ }
           
           // 添加路况图层
           const trafficLayer = new AMap.TileLayer.Traffic({ autoRefresh: true, interval: 180 });
@@ -3390,6 +3502,13 @@
         this.mapMarkers = [];
       },
 
+      // 验证坐标有效性
+      _validCoord(lng, lat) {
+        return lng != null && lat != null && !isNaN(lng) && !isNaN(lat)
+          && isFinite(lng) && isFinite(lat)
+          && lng >= -180 && lng <= 180 && lat >= -90 && lat <= 90;
+      },
+
       makePinContent(color) {
         return (
           '<div style="width:28px;height:28px;border-radius:50%;background:' +
@@ -3481,6 +3600,7 @@
               mk.on("click", () => openInfo(lng, lat, title, extra, address));
               this.mapInstance.add(mk);
               this.mapMarkers.push(mk);
+              return mk;
             };
 
             if (role === "commander") {
@@ -3516,16 +3636,19 @@
               //   );
               // }
               
-              // 显示警力位置
+              // 显示警力位置（带sessionId，支持位置实时更新）
               this.dispatch.units.forEach((unit, index) => {
                 if (unit.lng && unit.lat && unit.available) {
-                  addM(
+                  const mk = addM(
                     unit.lng,
                     unit.lat,
                     `警力 ${index + 1} · ${unit.name || unit.unitId}`,
                     "#22c55e",
-                    `<p class=\"amap-iw-note\">${unit.policeType} · ${unit.transportMode}</p>`
+                    `<p class=\"amap-iw-note\">${unit.policeType || '警员'} · ${unit.transportMode || '步行'}</p>`
                   );
+                  if (mk && unit.sessionId) {
+                    mk._officerSessionId = unit.sessionId;
+                  }
                 }
               });
             } else if (role === "officer") {

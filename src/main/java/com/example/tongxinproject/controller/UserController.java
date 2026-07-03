@@ -35,6 +35,22 @@ public class UserController {
         return Result.success(result);
     }
 
+    /**
+     * 匿名访客令牌（公众端无需登录即可获取受限JWT）
+     */
+    @PostMapping("/guest-token")
+    public Result<Map<String, Object>> getGuestToken() {
+        // 生成匿名访客JWT（role=guest, userId=0表示匿名）
+        String token = userService.generateGuestToken();
+        Map<String, Object> result = Map.of(
+            "token", token,
+            "tokenType", "Bearer",
+            "expiresIn", 86400,
+            "role", "guest"
+        );
+        return Result.success(result);
+    }
+
     @PostMapping("/register")
     public Result<Map<String, Object>> register(@Valid @RequestBody RegisterRequest request) {
         // 注册限流

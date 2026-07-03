@@ -285,23 +285,21 @@ public class CommandWebSocketHandler extends TextWebSocketHandler {
             } else if ("EVENT_REPORTED".equals(type)) {
                 JSONObject event = json.getJSONObject("event");
                 String sessionId = session.getId();
-                
+
                 // 广播事件上报通知给所有指挥端
                 Map<String, Object> officer = connectedOfficers.get(sessionId);
-                if (officer != null) {
-                    String officerName = (String) officer.get("name");
-                    String unitId = (String) officer.get("unitId");
-                    
-                    Map<String, Object> messageMap = new java.util.HashMap<>();
-                    messageMap.put("type", "EVENT_REPORTED");
-                    messageMap.put("sessionId", sessionId);
-                    messageMap.put("officerName", officerName);
-                    messageMap.put("unitId", unitId);
-                    messageMap.put("event", event);
-                    
-                    broadcastMessage(JSON.toJSONString(messageMap));
-                }
-                
+                String officerName = officer != null ? (String) officer.get("name") : "警员";
+                String unitId = officer != null ? (String) officer.get("unitId") : "未知";
+
+                Map<String, Object> messageMap = new java.util.HashMap<>();
+                messageMap.put("type", "EVENT_REPORTED");
+                messageMap.put("sessionId", sessionId);
+                messageMap.put("officerName", officerName);
+                messageMap.put("unitId", unitId);
+                messageMap.put("event", event);
+
+                broadcastMessage(JSON.toJSONString(messageMap));
+
                 // 发送确认给警员
                 sendMessage(session, JSON.toJSONString(Map.of(
                         "type", "EVENT_REPORTED_ACK",

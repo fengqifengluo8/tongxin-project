@@ -645,7 +645,8 @@
                   <p class="order-coord text-mono">{{ o.lng.toFixed(4) }}, {{ o.lat.toFixed(4) }}</p>
                   <p class="order-detail">{{ o.detail }}</p>
                   <div class="order-actions">
-                    <button type="button" class="btn btn-ghost btn-sm" @click="focusMapItem('order', o.id)">在地图上查看</button>
+                    <button type="button" class="btn btn-ghost btn-sm" @click="focusMapItem('order', o.id)">地图定位</button>
+                    <button type="button" class="btn btn-ghost btn-sm" @click="showRoutePlan(o.title, o.address || o.place, o.lng, o.lat)">🗺 查看路线</button>
                     <button type="button" class="btn btn-primary btn-sm" @click="completeOrder(o.id)">任务完成</button>
                   </div>
                 </div>
@@ -901,6 +902,6 @@
       </div>
     </div>
 
-    <script src="app.js?v=23"></script>
+    <script src="app.js?v=37"></script>
   </body>
 </html>

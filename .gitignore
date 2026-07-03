@@ -19,3 +19,30 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Node
+node_modules/
+package-lock.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Build artifacts & unpacked references (may contain sensitive metadata)
+target_unpacked/
+reference_unpacked/
+
+# WorkBuddy project data
+.workbuddy/
+
+# Temporary scripts
+check_ppt.py
+check_ppt2.py
+check_rids.py
+analyze_texts.py
+generate-ppt.js
+verify_v2.py
+verify_v3.py
+migrate_template*.py
+reference_ppt_text.txt
+package.json

@@ -28,7 +28,11 @@ public class WebMvcConfig implements WebMvcConfigurer {
                 .excludePathPatterns(
                         "/api/user/login",
                         "/api/user/register",
-                        "/api/guest/public/**"  // 公示事件公开访问
+                        "/api/user/guest-token",
+                        "/api/location/**",       // IP定位公开
+                        "/api/guest/public/**",
+                        "/ca-cert",
+                        "/cert-help"
                 )
                 .order(1);
     }

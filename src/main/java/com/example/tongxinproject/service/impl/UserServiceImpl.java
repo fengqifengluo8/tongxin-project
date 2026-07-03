@@ -112,6 +112,14 @@ public class UserServiceImpl implements UserService {
         return userMapper.selectOne(wrapper);
     }
 
+    @Override
+    public String generateGuestToken() {
+        if (jwtTokenProvider != null) {
+            return jwtTokenProvider.generateToken(0L, "guest_anonymous", "guest");
+        }
+        return null;
+    }
+
     private User sanitizeUser(User user) {
         user.setPassword(null);
         return user;
